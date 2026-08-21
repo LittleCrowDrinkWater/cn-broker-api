@@ -12,7 +12,10 @@ token.txt
 *.pem
 *.key
 tdx-login.json
-state/
+# ⚠️ 只挡仓库根下的运行期状态目录。**不能写成 `state/`**：那条会连源码包
+#    `cn_broker_api/state/` 一起挡掉，而 git 不报错、`git add -A` 也不报错
+#    ⇒ 推上去的仓库 clone 下来直接 import 失败（2026-08-22 真的发生过一次）。
+/state/
 *-state/
 logs/
 *.log
