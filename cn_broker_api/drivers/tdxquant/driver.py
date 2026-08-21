@@ -150,7 +150,12 @@ class TdxQuantDriver:
             ok, detail = L.ensure_logged_in(
                 cred, wait=wait_seconds, start=start, minimize=minimize)
         except SystemExit as e:        # login._spawn 找不到 exe 时会 SystemExit(2)
+            # 🔴 **刻意不结算**：`claim()` 已经先按失败记过，这里让它留着。
+            #    起不来客户端与密码错在这一层分不开，而保守那一边的代价小得多。
             raise DriverError(f"起客户端失败：{e}") from e
+        # ⭐ 必须结算：不调的表现是「登录成功了，但连续失败计数一直涨」，
+        #    几天之后那个闸会把自己关死。
+        self.latch.settle(acc, ok)
         return EnsureResult(ok=ok, detail=detail, acted=True)
 
     # ── 页面补丁 ─────────────────────────────────────────

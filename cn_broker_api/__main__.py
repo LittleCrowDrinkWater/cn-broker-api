@@ -58,7 +58,8 @@ def build_driver(cfg):  # noqa: ANN001, ANN201
     from cn_broker_api.drivers.tdxquant.driver import TdxQuantDriver
 
     latch = SubmitLatch(cfg.server.state_dir,
-                        max_per_day=cfg.tdxquant.max_password_submits_per_day)
+                        max_per_day=cfg.tdxquant.max_password_submits_per_day,
+                        max_consecutive_failures=cfg.tdxquant.max_consecutive_failures)
     return TdxQuantDriver(cfg.tdxquant, latch=latch, vault=PasswordVault())
 
 

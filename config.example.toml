@@ -3,14 +3,15 @@
 # ============================================================================
 #
 #  用法
-#    1. 把这个文件复制到**仓库之外**（默认位置是仓库的上一级 ../cn-broker-api.toml，
-#       刚好在 git 视野之外），或者放任意位置然后指环境变量：
-#         set CN_BROKER_API_CONFIG=D:\path\to\cn-broker-api.toml
+#    1. 复制成同目录下的 `config.toml`，改成你机器的实际情况。
+#       `.gitignore` 里 `*.toml` 全挡、只放行本模板 ⇒ 你的真值不会被推上去。
+#       也可以放任意位置然后指环境变量 CN_BROKER_API_CONFIG。
 #    2. 按你机器的实际情况改值
 #    3. 重启服务生效。**没有热加载**——重启一秒钟的事，而热加载是一整类 bug
 #
-#  🔴 别把改好的那份放回仓库：.gitignore 挡掉了 *.toml（只放行本模板），
-#     但那是安全网，不是许可。配置里装的是资金账号、客户端装在哪、凭据文件路径。
+#  🔴 本文件里**一个真实路径都没有**，全是占位符——它要进 git，而配置里装的是
+#     客户端装在哪、凭据文件路径这类只属于某一台机器的东西。
+#     真值写进同目录的 `config.toml`（被 .gitignore 挡着），别改这一份。
 #
 #  ⭐ 每一项都可以整段删掉——删了就吃默认值。服务启动时会把生效的全部配置打印一遍，
 #     并在吃默认值的项前面标一个 ~，所以"我到底配上了没有"不用靠猜。
@@ -30,12 +31,12 @@ port = 17710
 # 上次登录结果、健康检查缓存、token。
 # 与本文件刻意分开——程序只写这里，永远不动你手写的配置和注释。
 # 默认：本配置文件所在目录下的 cn-broker-api-state/
-state_dir = "D:/Agent/cn-broker-api-state"
+state_dir = "D:/your-state-dir/cn-broker-api-state"
 
 # token 文件。所有接口调用都要带 Authorization: Bearer <token>。
 # 首次启动没有就自动生成一个并打印路径。
 # 默认：state_dir/token.txt ⇒ 一般不需要写这一项。
-# token_file = "D:/Agent/cn-broker-api-state/token.txt"
+# token_file = "D:/your-state-dir/cn-broker-api-state/token.txt"
 
 
 [health]
@@ -72,7 +73,7 @@ name = "tdxquant"
 # ⚠️ 要指向**同时装了行情/量化与交易两半**的那份安装目录（判据：目录下有 NewTc\TC.exe）。
 #    只有主程序没有 NewTc 的那份凑不齐交易通道，指过去的表现是"能查却发不出委托"。
 # 默认：无（不给的话驱动在第一次真调用时明确失败）。
-tdx_home = "D:/Common/TDXV2026X64"
+tdx_home = "D:/YourBroker/TdxClient"
 
 # 客户端自己开的本地 JSON-RPC 地址。端口属主是客户端主程序本身
 # ⇒ **没客户端就没服务端**，这也是本服务不追求脱开客户端独立运行的原因。
@@ -91,7 +92,7 @@ cred_source = "file"
 # account_type：STOCK ＝ 普通账户，CREDIT ＝ 信用（两融）账户。
 # 🔴 **必须放在仓库之外。**
 # 默认：无（cred_source = "file" 而这一项不给的话，登录那一趟会明确报"缺凭据"）。
-cred_file = "D:/Agent/tdx-login.json"
+cred_file = "D:/your-secrets/broker-login.json"
 
 # 每个账户每天最多提交几次交易密码。计数落盘，重启服务不清零。
 #
@@ -102,6 +103,14 @@ cred_file = "D:/Agent/tdx-login.json"
 #    三天就攒到 6 次连续错误）。那个改动还没做。
 # ⇒ 现在这个闸的实际职责是**跑飞的兜底**：防我们自己的代码循环提交。默认 10。
 max_password_submits_per_day = 10
+
+# **连续**提交没成功几次之后停手。成功登录清零，**不按天清零**。
+# 🔴 这才是防券商锁定的那个闸：券商那边的计数通常也只在成功登录时清零，
+#    所以按天算的话，密码真错了会一天一天地攒（每天 2 次，三天就 6 次连续失败）。
+# ⚠️ 券商的锁定阈值本项目**未核实** ⇒ 默认 3：一次偶发失败不至于把自动登录关死，
+#    而真的密码错了也不会攒到多数券商的阈值上去。
+# 触发之后要人工登录一次（登成功就自动清零），不提供 force 参数。
+max_consecutive_failures = 3
 
 
 [watchdog]

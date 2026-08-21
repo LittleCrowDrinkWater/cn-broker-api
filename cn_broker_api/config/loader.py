@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from cn_broker_api.config.error import ConfigError
 from cn_broker_api.config.health import HealthConfig
-from cn_broker_api.config.paths import DEFAULT_CONFIG_PATH
+from cn_broker_api.config.paths import DEFAULT_CONFIG_PATH, candidates
 from cn_broker_api.config.root import Config
 from cn_broker_api.config.server import ServerConfig
 from cn_broker_api.config.tdxquant import TdxQuantConfig
@@ -52,10 +52,22 @@ def _dotted_keys(raw: Dict[str, Any], prefix: str = "") -> list:
     return out
 
 
+def _first_existing() -> Path:
+    """候选位置里第一个真存在的；都不存在就返回默认那个（让报错文案指向它）。
+
+    ⭐ 返回默认那个而不是 None：「配置在哪」这句话在报错里必须是具体路径，
+    不然人不知道该把文件放哪儿。
+    """
+    for c in candidates():
+        if c.exists():
+            return c
+    return DEFAULT_CONFIG_PATH
+
+
 def load(path: Optional[Path] = None) -> Config:
     """读配置。**缺文件不是错**——用全套默认值起得来，只是驱动会因为 `tdx_home`
     没给而在第一次真调用时明确失败（而不是 import 期就把服务拖挂）。"""
-    p = path or _as_path(os.environ.get("CN_BROKER_API_CONFIG")) or DEFAULT_CONFIG_PATH
+    p = path or _as_path(os.environ.get("CN_BROKER_API_CONFIG")) or _first_existing()
     raw: Dict[str, Any] = {}
     if p.exists():
         try:
@@ -97,7 +109,8 @@ def load(path: Optional[Path] = None) -> Config:
             mcp_url=str(tq.get("mcp_url") or "http://127.0.0.1:17709").rstrip("/"),
             cred_source=cred_source,
             cred_file=_as_path(tq.get("cred_file")),
-            max_password_submits_per_day=int(tq.get("max_password_submits_per_day") or 1)),
+            max_password_submits_per_day=int(tq.get("max_password_submits_per_day") or 10),
+            max_consecutive_failures=int(tq.get("max_consecutive_failures") or 3)),
         watchdog=watchdog,
         driver=name,
         source_path=p if p.exists() else None,

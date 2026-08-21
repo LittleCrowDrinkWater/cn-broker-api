@@ -52,6 +52,8 @@ class Config:
             ("driver.tdxquant.cred_file", str(self.tdxquant.cred_file or "(未设)")),
             ("driver.tdxquant.max_password_submits_per_day",
              str(self.tdxquant.max_password_submits_per_day)),
+            ("driver.tdxquant.max_consecutive_failures",
+             str(self.tdxquant.max_consecutive_failures)),
             ("watchdog.enabled", "true" if self.watchdog.enabled else "false"),
             ("watchdog.interval_seconds", str(self.watchdog.interval_seconds)),
             ("watchdog.window_start", self.watchdog.window_start),
