@@ -1,0 +1,42 @@
+# ── 绝不入库：凭据与运行期状态 ────────────────────────────
+# 本仓库计划公开。凡是「这台机器特有」或「能登进别人账户」的东西一律挡在这里。
+# ⚠️ 加规则要往这一段加，别往下面的常规段加——常规段是给工具垃圾用的，
+#    混在一起以后没人分得清哪条是安全规则、哪条能随便删。
+*.toml
+!config.example.toml
+token.txt
+*token*
+*secret*
+*credential*
+*password*
+*.pem
+*.key
+tdx-login.json
+state/
+*-state/
+logs/
+*.log
+# 窗口截图会把账号、持仓、资产原样拍进去
+*.png
+*.jpg
+*.bmp
+diag/
+
+# ── Python ──────────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# ── 编辑器与系统 ─────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
