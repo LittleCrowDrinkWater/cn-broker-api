@@ -1,16 +1,9 @@
-"""桌面客户端驱动：把搬来的那三份（登录 / 自检 / 页面补丁）装成一个驱动。
+"""桌面客户端驱动：把搬来的那几份（登录 / 自检 / 页面补丁 / 交易）装成一个驱动。
 
-这一层**只做编排**，不含任何判据——判据全在 `login.py` / `health.py` 里，那两份是从生产
-环境整文件搬来的，动它们等于把真机验证的结果作废。
+这一层**只做编排**，不含任何判据——判据全在 `login.py` / `health.py` / `trading.py` 里，
+前两份是从生产环境整文件搬来的，动它们等于把真机验证的结果作废。
 
-## 密码从哪来
-
-两条路，由配置的 `cred_source` 选：
-
-- `file`    ：`login.load_cred()` 读仓库外的那个 JSON（搬迁期，行为与搬迁前逐字节相同）
-- `request` ：调用方在请求里带过来，只在内存留当天一份（`state.PasswordVault`）
-
-⭐ 做成一个 `_resolve_cred()` 接缝而不是两套代码：切换靠配置，两条路共用后面的一整段。
+密码两条来源由配置的 `cred_source` 选（文件 / 请求下发），共用 `_resolve_cred()` 一个出口。
 """
 from __future__ import annotations
 
@@ -25,7 +18,9 @@ from cn_broker_api.drivers.driver_error import DriverError
 from cn_broker_api.drivers.ensure_result import EnsureResult
 from cn_broker_api.drivers.tdxquant import health as H
 from cn_broker_api.drivers.tdxquant import login as L
+from cn_broker_api.drivers.tdxquant.client import TdxQuantClient, set_pyplugins
 from cn_broker_api.drivers.tdxquant.mcp import McpClient
+from cn_broker_api.drivers.tdxquant.trading import TdxQuantTrading
 from cn_broker_api.state import PasswordVault, SubmitLatch
 
 logger = logging.getLogger(__name__)
@@ -59,6 +54,7 @@ class TdxQuantDriver:
         # ⭐ 注入而不是让它们各自读配置——两处各推一份的话，换客户端时改一处、
         #    另一处静默指向不存在的目录，而「文件不在」会被自检读成「补丁没打」。
         H.set_tdx_home(cfg.tdx_home)
+        set_pyplugins((cfg.tdx_home / "PYPlugins") if cfg.tdx_home else None)
         L.set_mcp_url(cfg.mcp_url)
         L.set_cred_path(cfg.cred_file if cfg.cred_source == "file" else None)
 
@@ -69,17 +65,30 @@ class TdxQuantDriver:
                 Capability.AUTOCONFIRM_PATCH]
 
     def client(self) -> McpClient:
+        """自检那一侧的最小通道（只回答"通道通不通"，三十行）。"""
         return McpClient(self.cfg.mcp_url)
+
+    def trading(self, *, account: str = "", account_type: str = "STOCK") -> TdxQuantTrading:
+        """这个账户上的交易与查询。
+
+        ⭐ 现构现用：底下那条连接是**进程级共享**的，`connect()` 命中同一个身份就短路，
+        所以这里没有要缓存的东西。身份含账号与类别（`ConnKey`），换账户才会真重连。
+        """
+        client = TdxQuantClient(
+            str(self.cfg.tdx_home / "PYPlugins") if self.cfg.tdx_home else None,
+            account=account, account_type=account_type,
+            transport=self.cfg.transport, mcp_url=self.cfg.mcp_url)
+        return TdxQuantTrading(client, cancel_timeout=self.cfg.cancel_confirm_timeout,
+                               cancel_interval=self.cfg.cancel_confirm_interval)
 
     # ── 桌面进程（看门狗要的两件事）─────────────────────
     def desktop_recipe(self) -> DesktopRecipe:
         return TDX_RECIPE
 
     def desktop_processes(self) -> Dict[str, bool]:
-        """配方里那几个进程，各自在不在跑。**只读、零成本**——不连客户端、不抢锁。
+        """配方里那几个进程各自在不在跑。**只读、零成本**，不连客户端、不抢锁。
 
-        ⭐ 「进程在跑」离「能下单」还有三道门（客户端行情登录、交易账户登录、
-        自动确认补丁），所以这个结果**不能当成通道可用**，它只回答最外面那一层。
+        ⭐ 「进程在跑」离「能下单」还有三道门 ⇒ 这个结果不能当成通道可用。
         """
         running = {name.lower() for name in
                    L.running_processes(TDX_RECIPE.processes).values()}

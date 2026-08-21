@@ -406,13 +406,19 @@ class TdxQuantClient:
             self.prepare_import()
             try:
                 if self._transport == "mcp":
-                    from tqcenter import tqconst   # 只要常量表，连接走 HTTP
+                    # ⚠️ **刻意不 import tqcenter**：那个模块顶层要 numpy/pandas 并加载 64 位
+                    #    DLL，而 mcp 通道一样都不需要（连接是 HTTP）。编号表用 ast 从厂商
+                    #    源码里读，仍然只有厂商一份。见 `tq_constants`。
+                    from cn_broker_api.drivers.tdxquant.tq_constants import TqConstants
+
+                    tqconst = TqConstants.load(self._pyplugins)
                     tq = _McpTransport(self._mcp_url)
                 else:
                     from tqcenter import tq, tqconst   # 懒加载：此处才需 64 位 + DLL + 客户端
             except Exception as e:  # noqa: BLE001
                 raise TdxQuantConnectionError(
-                    f"导入 tqcenter 失败（确认 64 位 Python + PYPlugins 路径 + 客户端已开）: {e}") from e
+                    f"取厂商编号表/导入 tqcenter 失败"
+                    f"（确认 64 位 Python + PYPlugins 路径 + 客户端已开）: {e}") from e
             # 先记下 tq：后面任何一步失败，hard_reset 都要靠它清接管标志/断开
             _SHARED["tq"], _SHARED["tqconst"] = tq, tqconst
             try:

@@ -27,11 +27,7 @@ def register(app: Flask, ctx: ApiContext) -> None:
 
     @app.post("/v1/session/ensure")
     def session_ensure():  # noqa: ANN202
-        """把客户端弄到「交易通道可用」。**幂等 + 单飞**。
-
-        ⭐ 是 `ensure`（把它弄好，已经好了就什么都不做）而不是 `login`（去执行一次登录动作）：
-        状态驱动而非弹框驱动，所以定时任务可以放心反复打。
-        """
+        """把客户端弄到「交易通道可用」。**幂等 + 单飞**（理由见模块 docstring）。"""
         body = request.get_json(silent=True) or {}
         account = str(body.get("account") or "").strip()
         account_type = str(body.get("account_type") or "STOCK").strip().upper()

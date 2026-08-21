@@ -7,4 +7,5 @@ from __future__ import annotations
 
 
 #: 契约版本。两侧必须一起升。
-CONTRACT_VERSION = 1
+#: v2 ＝交易与行情端点上线（v1 只有桌面监护与自检）。
+CONTRACT_VERSION = 2

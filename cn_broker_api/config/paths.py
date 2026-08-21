@@ -1,17 +1,8 @@
-"""配置文件去哪儿找。
+"""配置文件去哪儿找：环境变量 `CN_BROKER_API_CONFIG` > `<仓库>/config.toml` >
+`<仓库上一级>/cn-broker-api.toml`（旧位置，只为兼容）。
 
-## 查找顺序
-
-1. 环境变量 `CN_BROKER_API_CONFIG`（显式指定，优先级最高）
-2. `<仓库>/config.toml` —— **默认位置**。它在仓库目录里，但被 `.gitignore` 挡着
-   （`*.toml` 全挡、只放行 `config.example.toml`）⇒ 真值不会被推上去。
-3. `<仓库上一级>/cn-broker-api.toml` —— 旧位置，留着兼容已经这么配过的机器。
-
-⚠️ 放在仓库目录里的代价只有一条：**`git clean -xdf` 会把它删掉**（未跟踪文件）。
-所以别在这个仓库里跑那条命令。换来的是「配置和代码在一起、不用记第二个路径」。
-
-⭐ 找不到任何一份**不是错**：全套默认值也起得来，只是 `tdx_home` 没给的话，
-驱动会在第一次真调用时明确失败（而不是 import 期就把服务拖挂）。
+⚠️ 默认位置在仓库目录里、靠 `.gitignore` 挡着 ⇒ 别在这个仓库跑 `git clean -xdf`。
+⭐ 一份都找不到不是错：全套默认值起得来，只是 `tdx_home` 缺了会在第一次真调用时失败。
 """
 from __future__ import annotations
 

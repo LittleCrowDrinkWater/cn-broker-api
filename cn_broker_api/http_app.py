@@ -1,11 +1,8 @@
 """HTTP 层的装配：建 app、注册各组路由。**这里不写业务**。
 
-路由按关注点分在 `api/` 下，每组一个模块、各自一个 `register(app, ctx)`：
-`auth`（鉴权）｜`meta_routes`（元信息与诊断页）｜`health_routes`（自检）｜
-`session_routes`（登录与任务）。
+路由按关注点分在 `api/` 下，每组一个模块、各自一个 `register(app, ctx)`。
 
-⭐ `cache` 与 `flight` 由本函数建**一份**再传下去：各路由自己建的表现分别是
-「缓存永远是空的」和「两个客户端进程」，而两者都不报错。
+⭐ `cache` / `flight` / `queue` 由本函数各建**一份**再传下去，见 `api/context.py`。
 """
 from __future__ import annotations
 
@@ -16,9 +13,11 @@ from typing import Any, Optional
 
 from flask import Flask
 
-from cn_broker_api.api import auth, health_routes, meta_routes, session_routes
+from cn_broker_api.api import (auth, health_routes, meta_routes, quote_routes,
+                               session_routes, trade_routes)
 from cn_broker_api.api.context import ApiContext
 from cn_broker_api.config import Config
+from cn_broker_api.serial_queue import AccountSerialQueue
 from cn_broker_api.singleflight import SingleFlight
 from cn_broker_api.state import HealthCache, LastRun
 
@@ -48,11 +47,8 @@ def load_or_create_token(path: Path) -> str:
 def create_app(cfg: Config, driver: Any, *, token: Optional[str] = None,
                flight: Optional[SingleFlight] = None,
                watchdog: Any = None) -> Flask:
-    """建 app。
-
-    ⭐ `flight` 可以从外面传进来：看门狗和 `/v1/session/ensure` **必须共用同一把**——
-    各拿一把的表现是"看门狗正在拉起客户端，同时 ensure 也去拉一遍"⇒ 两个客户端进程。
-    """
+    """建 app。`flight` 可以从外面传进来：看门狗和 `/v1/session/ensure` **必须共用同一把**，
+    各拿一把的表现是两个客户端进程。"""
     app = Flask(__name__, static_folder=None)
     app.config["CN_BROKER_API_CFG"] = cfg
     ctx = ApiContext(
@@ -60,9 +56,11 @@ def create_app(cfg: Config, driver: Any, *, token: Optional[str] = None,
         cache=HealthCache(ttl_seconds=cfg.health.cache_seconds),
         last_run=LastRun(state_dir=cfg.server.state_dir),
         flight=flight or SingleFlight(),
+        queue=AccountSerialQueue(),
         token=token or load_or_create_token(cfg.token_file),
         repo_root=Path(__file__).resolve().parents[1],
         watchdog=watchdog)
-    for group in (auth, meta_routes, health_routes, session_routes):
+    for group in (auth, meta_routes, health_routes, session_routes, trade_routes,
+                  quote_routes):
         group.register(app, ctx)
     return app

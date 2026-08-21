@@ -21,10 +21,9 @@ def register(app: Flask, ctx: ApiContext) -> None:
 
     @app.get("/v1/health")
     def health():  # noqa: ANN202
-        """**便宜**：读缓存 + 回报年龄。没有缓存时才真探一次（第一次总得探）。
+        """**便宜**：读缓存 + 回报年龄，没有缓存时才真探一次。
 
-        🔴 缓存按 (账号, 类别, need_times) 分键：不同实例问的时刻不一样，共用一份缓存会
-        让 A 实例读到"按 B 的时刻判"的结论——那正是自动确认那一项最不能含糊的地方。
+        🔴 缓存按 (账号, 类别, need_times) 分键：共用一份会让 A 读到"按 B 的时刻判"的结论。
         """
         e = cache.fresh(key=_cache_key())
         fresh_now = False
