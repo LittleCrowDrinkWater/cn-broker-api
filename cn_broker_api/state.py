@@ -138,22 +138,29 @@ class HealthCache:
     def __init__(self, ttl_seconds: int = 30) -> None:
         self.ttl = max(0, int(ttl_seconds))
         self._lock = threading.Lock()
-        self._entry: Optional[CachedHealth] = None
+        #: 🔴 **按键分开存**：不同调用方问的账号/时刻不一样，共用一份缓存会让 A 读到
+        #: "按 B 的参数判"的结论。共用一格是这类缓存最典型的一种静默错。
+        self._entries: Dict[str, CachedHealth] = {}
 
-    def get(self) -> Optional[CachedHealth]:
+    def get(self, key: str = "") -> Optional[CachedHealth]:
         with self._lock:
-            return self._entry
+            return self._entries.get(key)
 
-    def fresh(self, *, now: Optional[datetime] = None) -> Optional[CachedHealth]:
-        e = self.get()
+    def fresh(self, *, key: str = "",
+              now: Optional[datetime] = None) -> Optional[CachedHealth]:
+        e = self.get(key)
         if e is not None and e.age_seconds(now) <= self.ttl:
             return e
         return None
 
-    def put(self, payload: Dict[str, Any], *, now: Optional[datetime] = None) -> CachedHealth:
+    def put(self, payload: Dict[str, Any], *, key: str = "",
+            now: Optional[datetime] = None) -> CachedHealth:
         e = CachedHealth(payload=payload, at=now or datetime.now())
         with self._lock:
-            self._entry = e
+            self._entries[key] = e
+            if len(self._entries) > 16:      # 键的基数很小，这只是个失控上限
+                for k in list(self._entries)[:4]:
+                    self._entries.pop(k, None)
         return e
 
 

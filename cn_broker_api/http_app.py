@@ -135,11 +135,33 @@ def create_app(cfg: Config, driver: Any, *, token: Optional[str] = None) -> Flas
                        config_path=str(cfg.source_path) if cfg.source_path else None)
 
     # ── 健康检查 ─────────────────────────────────────────
+    def _cache_key() -> str:
+        return "|".join([(request.args.get("account") or "").strip(),
+                         (request.args.get("account_type") or "STOCK").strip().upper(),
+                         (request.args.get("need_times") or "").strip()])
+
+    def _parse_need_times(raw: str):  # noqa: ANN202
+        """`"09:23,14:57"` → `[(9,23),(14,57)]`。**认不出的格子直接跳过**：
+        自检自己就是兜底件，不该因为一个参数写歪了而整条不跑。"""
+        out = []
+        for tok in (raw or "").split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                hh, _, mm = tok.partition(":")
+                out.append((int(hh), int(mm)))
+            except (TypeError, ValueError):
+                logger.warning("[health] need_times 里认不出的格子：%r，跳过", tok)
+        return sorted(set(out))
+
     def _probe() -> Dict[str, Any]:
         account = (request.args.get("account") or "").strip()
         account_type = (request.args.get("account_type") or "STOCK").strip().upper()
+        need_times = _parse_need_times(request.args.get("need_times") or "")
         try:
-            return driver.health(account=account, account_type=account_type)
+            return driver.health(account=account, account_type=account_type,
+                                 need_times=need_times)
         except Exception as e:  # noqa: BLE001 — 自检自己就是兜底件，它崩了就什么都不知道了
             logger.exception("[health] 自检本身出错")
             return {"ok": False, "message": f"自检出错：{type(e).__name__}: {str(e)[:200]}",
@@ -147,11 +169,15 @@ def create_app(cfg: Config, driver: Any, *, token: Optional[str] = None) -> Flas
 
     @app.get("/v1/health")
     def health():  # noqa: ANN202
-        """**便宜**：读缓存 + 回报年龄。没有缓存时才真探一次（第一次总得探）。"""
-        e = cache.fresh()
+        """**便宜**：读缓存 + 回报年龄。没有缓存时才真探一次（第一次总得探）。
+
+        🔴 缓存按 (账号, 类别, need_times) 分键：不同实例问的时刻不一样，共用一份缓存会
+        让 A 实例读到"按 B 的时刻判"的结论——那正是自动确认那一项最不能含糊的地方。
+        """
+        e = cache.fresh(key=_cache_key())
         fresh_now = False
         if e is None:
-            e = cache.put(_probe())
+            e = cache.put(_probe(), key=_cache_key())
             fresh_now = True
         body = dict(e.payload)
         body["age_seconds"] = round(e.age_seconds(), 1)
@@ -162,7 +188,7 @@ def create_app(cfg: Config, driver: Any, *, token: Optional[str] = None) -> Flas
     @app.post("/v1/health/refresh")
     def health_refresh():  # noqa: ANN202
         """强制重探。**要连客户端、占串行槽 ⇒ 只能按需打**（诊断页那个按钮）。"""
-        e = cache.put(_probe())
+        e = cache.put(_probe(), key=_cache_key())
         body = dict(e.payload)
         body["age_seconds"] = 0.0
         body["from_cache"] = False
@@ -194,7 +220,7 @@ def create_app(cfg: Config, driver: Any, *, token: Optional[str] = None) -> Flas
                                           minimize=minimize, wait_seconds=wait)
             payload = {"ok": res.ok, "acted": res.acted, "detail": res.detail}
             last_run.write(res.ok, res.detail)
-            cache.put(_probe())          # 登过之后缓存必然过期，顺手刷一次
+            cache.put(_probe(), key=_cache_key())   # 登过之后缓存必然过期，顺手刷一次
             flight.finish(job_id, payload)
             return jsonify(job_id=job_id, state="done", **payload), (200 if res.ok else 503)
         except SubmitBlocked as e:
