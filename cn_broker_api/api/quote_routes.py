@@ -21,15 +21,22 @@ def register(app: Flask, ctx: ApiContext) -> None:
     @app.get("/v1/quotes")
     @maps_failures
     def quotes():  # noqa: ANN202
-        """批量快照（现价 / 昨收 / 买一 / 卖一）。取不到的代码不出现在结果里。"""
+        """快照（现价 / 昨收 / 买一 / 卖一）。取不到的代码不出现在结果里。
+
+        `depth=true` 再带上**五档盘口含挂单量**与内外盘、最新单量、笔数、均价。
+        ⭐ 封板时买一那档的挂单量就是**封单量**，这是要 depth 的主要理由。
+        ⚠️ 这个端点走交易客户端（要账户句柄）。不需要盘口时用 `/v1/prices`：那个一次调用
+        拿一批、也不要账户句柄。
+        """
         codes = [c.strip() for c in (request.args.get("codes") or "").split(",") if c.strip()]
         if not codes:
             raise ValueError("要给 codes（逗号分隔，代码带不带后缀都行）")
         if len(codes) > MAX_CODES:
             raise ValueError(f"一次最多 {MAX_CODES} 个代码，收到 {len(codes)} 个")
+        depth = (request.args.get("depth") or "").lower() in ("1", "true", "yes")
         account, account_type = account_of()
         rows = in_queue(ctx, account, account_type, f"快照 x{len(codes)}",
-                        lambda t: t.quotes(codes))
+                        lambda t: t.quotes(codes, depth=depth))
         return jsonify(known(rows)), 200
 
     @app.get("/v1/instruments/<code>")

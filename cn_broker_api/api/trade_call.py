@@ -70,6 +70,15 @@ def maps_failures(fn: Callable) -> Callable:
     return inner
 
 
+def in_market_queue(ctx: ApiContext, what: str, work: Callable[[Any], Any]) -> Any:
+    """行情调用同样排队，但用一个**与账户无关**的键。
+
+    它们不需要账户句柄，所以不该混进某个账户的批里去触发账户切换；但客户端进程只有一个，
+    一次 K 线拉取和一次报单在它那侧是同一条路 ⇒ 仍然要排队。
+    """
+    return ctx.queue.submit("market", lambda: work(ctx.driver.market()), what=what)
+
+
 def in_queue(ctx: ApiContext, account: str, account_type: str, what: str,
              work: Callable[[Any], Any]) -> Any:
     """按账户排队跑一次交易调用。`work` 收到该账户的交易对象。

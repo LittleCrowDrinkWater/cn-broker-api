@@ -13,8 +13,8 @@ from typing import Any, Optional
 
 from flask import Flask
 
-from cn_broker_api.api import (auth, health_routes, meta_routes, quote_routes,
-                               session_routes, trade_routes)
+from cn_broker_api.api import (auth, diag_routes, health_routes, market_routes,
+                               meta_routes, quote_routes, session_routes, trade_routes)
 from cn_broker_api.api.context import ApiContext
 from cn_broker_api.config import Config
 from cn_broker_api.serial_queue import AccountSerialQueue
@@ -61,6 +61,6 @@ def create_app(cfg: Config, driver: Any, *, token: Optional[str] = None,
         repo_root=Path(__file__).resolve().parents[1],
         watchdog=watchdog)
     for group in (auth, meta_routes, health_routes, session_routes, trade_routes,
-                  quote_routes):
+                  quote_routes, market_routes, diag_routes):
         group.register(app, ctx)
     return app

@@ -13,6 +13,7 @@ from cn_broker_api.drivers.capability import Capability
 from cn_broker_api.drivers.capability_missing import CapabilityMissing
 from cn_broker_api.drivers.desktop_recipe import DesktopRecipe
 from cn_broker_api.drivers.ensure_result import EnsureResult
+from cn_broker_api.drivers.paper_market import PaperMarketData
 from cn_broker_api.drivers.paper_trading import PaperTrading
 
 
@@ -27,6 +28,9 @@ class PaperDriver:
         self.ensure_calls = 0
         self._books: Dict[str, PaperTrading] = {}
 
+    def market(self) -> PaperMarketData:
+        return PaperMarketData()
+
     def trading(self, *, account: str = "", account_type: str = "STOCK") -> PaperTrading:
         """按 (账号, 类别) 各一本委托簿——同一个账号在两个类别上是两条连接。"""
         return self._books.setdefault(f"{account_type}:{account}", PaperTrading())
@@ -34,7 +38,8 @@ class PaperDriver:
     def capabilities(self) -> List[str]:
         """⭐ 刻意**不声明** `DESKTOP_LOGIN` / `AUTOCONFIRM_PATCH` / `CREDIT_ORDER`：
         谎报能力会让「能力声明」这个机制失去它存在的全部价值。"""
-        return [Capability.CANCEL, Capability.BID_ASK_QUOTE, Capability.SELLABLE_VOLUME]
+        return [Capability.CANCEL, Capability.BID_ASK_QUOTE, Capability.SELLABLE_VOLUME,
+                Capability.MARKET_DATA]
 
     def desktop_recipe(self) -> DesktopRecipe:
         """空配方。⭐ 返回空的而不是抛错：看门狗要能问出「这个驱动没有进程要管」。"""

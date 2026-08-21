@@ -19,6 +19,7 @@ from cn_broker_api.drivers.ensure_result import EnsureResult
 from cn_broker_api.drivers.tdxquant import health as H
 from cn_broker_api.drivers.tdxquant import login as L
 from cn_broker_api.drivers.tdxquant.client import TdxQuantClient, set_pyplugins
+from cn_broker_api.drivers.tdxquant.market import TdxQuantMarketData
 from cn_broker_api.drivers.tdxquant.mcp import McpClient
 from cn_broker_api.drivers.tdxquant.trading import TdxQuantTrading
 from cn_broker_api.state import PasswordVault, SubmitLatch
@@ -60,9 +61,19 @@ class TdxQuantDriver:
 
     # ── 能力 ─────────────────────────────────────────────
     def capabilities(self) -> List[str]:
-        return [Capability.CREDIT_ORDER, Capability.CANCEL, Capability.BID_ASK_QUOTE,
+        """⭐ 行情那一族只在 mcp 通道上声明：它是照着客户端那个 JSON-RPC 端口写的，
+        ctypes 通道上没实现。谎报的表现是调用方过了能力闸然后撞一个看不懂的错。"""
+        caps = [Capability.CREDIT_ORDER, Capability.CANCEL, Capability.BID_ASK_QUOTE,
                 Capability.SELLABLE_VOLUME, Capability.DESKTOP_LOGIN,
-                Capability.AUTOCONFIRM_PATCH]
+                Capability.DESKTOP_DIAG, Capability.AUTOCONFIRM_PATCH]
+        if self.cfg.transport == "mcp":
+            caps.insert(4, Capability.MARKET_DATA)
+        return caps
+
+    def market(self) -> TdxQuantMarketData:
+        """行情与静态数据。**不取账户句柄**——实测这些函数都不认账户，
+        交易没登也能用（而它们恰恰是交易登录出问题时最需要能看的东西）。"""
+        return TdxQuantMarketData(self.client())
 
     def client(self) -> McpClient:
         """自检那一侧的最小通道（只回答"通道通不通"，三十行）。"""
@@ -103,6 +114,40 @@ class TdxQuantDriver:
             L._spawn(rel)
         except SystemExit as e:                # _spawn 找不到 exe 时 SystemExit(2)
             raise DriverError(f"起 {name} 失败（{rel} 找不到？）：{e}") from e
+
+    # ── 排查用的两个动作 ─────────────────────────────────
+    def minimize_desktop(self) -> int:
+        """把客户端窗口收起来，返回收了几个。
+
+        ⭐ 无人值守那一趟结束时才该收：人正看着它的时候动窗口很讨厌，
+        所以 `ensure` 只在**真动手过**的那一趟收（见 `EnsureResult.acted`）。
+        """
+        return L.minimize_client(L._target_pids(TDX_RECIPE.processes))
+
+    def screenshot(self) -> "tuple[bytes, str]":
+        """抓当时那个窗口的位图，返回 (PNG 字节, 说明)。
+
+        🔴 **只在内存里过一遍，绝不落盘**：位图会把账号、持仓、资产原样拍进去。
+        ⭐ 有登录框就抓登录框——排查的时候要看的正是「它到底弹了个什么框」。
+        """
+        import io
+
+        pids = L._target_pids(TDX_RECIPE.processes)
+        if not pids:
+            raise DriverError("客户端进程一个都不在跑，没有窗口可抓")
+        dlg = L.find_login_dialog(pids)
+        tops = L.visible_tops(pids)
+        target, what = (dlg, "登录框") if dlg else (None, "")
+        if target is None:
+            if not tops:
+                raise DriverError("客户端在跑但没有可见窗口（最小化了？）")
+            target, what = next(iter(tops.items()))[0], "客户端主窗口"
+        img = L.grab(target)
+        if img is None:
+            raise DriverError(f"抓 {what} 的位图失败（窗口刚关掉？）")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue(), f"{what}（hwnd={target}）"
 
     # ── 自检 ─────────────────────────────────────────────
     def health(self, *, account: str = "", account_type: str = "STOCK",

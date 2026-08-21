@@ -38,6 +38,11 @@ class Driver(Protocol):
         """
         ...
 
+    def market(self) -> Any:
+        """行情与静态数据（形状见 `drivers.tdxquant.market`）。**不带账户维度**：
+        这些调用不认账户，硬塞一个账户参数会让人以为行情也要交易登录。"""
+        ...
+
     def ensure_logged_in(self, *, password: Optional[str] = None,
                          account: str = "", account_type: str = "STOCK",
                          start: bool = True, minimize: bool = True,

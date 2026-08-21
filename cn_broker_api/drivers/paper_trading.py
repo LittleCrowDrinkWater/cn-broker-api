@@ -58,7 +58,8 @@ class PaperTrading:
         而纸面驱动是真的知道自己没有钱。"""
         return account_row(total_equity=0, total_available=0)
 
-    def quotes(self, codes: Sequence[str]) -> List[Dict[str, Any]]:
+    def quotes(self, codes: Sequence[str], *,
+               depth: bool = False) -> List[Dict[str, Any]]:
         return [quote_row(symbol=to_tq_code(c), last=0, prev_close=0) for c in codes]
 
     def instrument(self, code: str) -> Optional[Dict[str, Any]]:

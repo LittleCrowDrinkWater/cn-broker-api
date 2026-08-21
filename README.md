@@ -159,13 +159,28 @@ GET    /v1/positions               持仓
 GET    /v1/positions/sellable      可卖量（三态口径最要紧的一处）
 GET    /v1/account                 资产
 
-行情（客户端自己那条行情，报单会被它的状态挡住）
-GET    /v1/quotes?codes=a,b        批量快照：现价 / 昨收 / 买一 / 卖一
-GET    /v1/instruments/{code}      标的静态信息（margin_target 三态）
+行情与静态数据（客户端自己那条行情，报单会被它的状态挡住）
+GET    /v1/quotes?codes=a,b[&depth=true]   快照：现价/昨收/买一卖一，depth 再加五档含挂单量
+GET    /v1/prices?codes=a,b                一次调用拿一批的现价/昨收/成交量（无盘口）
+GET    /v1/klines?codes=..&period=1d&count=N   最近 N 根 K 线（refresh=true 先刷缓存）
+GET    /v1/limit-status?codes=a,b          封板状态：封单量、首末封板时刻、开板次数
+GET    /v1/dividends/{code}?start=&end=    除权除息事件清单
+GET    /v1/instruments/{code}              标的静态信息（margin_target 三态）
+
+排查
+POST   /v1/session/minimize        收起客户端窗口
+GET    /v1/diag/screenshot         当时那个窗口的位图（PNG，不落盘）
 ```
 
-**还没有的**：`/v1/klines`（客户端的日线缓存常缺最新交易日，调用方那侧默认不用它）、
-`/v1/session/minimize`、`/v1/diag/screenshot`。前者是选做，后两个是运维便利。
+### 行情那几个端点的四条口径（都是实测出来的，别靠猜）
+
+1. **不带账户维度、也不要交易登录**：这几个厂商函数不认账户 ⇒ 交易没登也能用，
+   而这恰恰是交易登录出问题时最需要能看的东西。
+2. **K 线只能取「最近 N 根」**：给了起止区间，厂商只回总数、行是空的（猜过三种分页参数名
+   都不行）⇒ **这条路不是历史回补的路**。
+3. **分钟线不刷缓存基本就是空的** ⇒ 要分钟线带 `refresh=true`（慢几秒）。
+4. **单位在同一个客户端里就不统一**：K 线的成交量是**股**、成交额是**万元**；
+   `/v1/prices` 与快照的成交量是**手**。所以每个响应自带 `units`，别让调用方去记。
 
 ### 三处容易做错的口径
 

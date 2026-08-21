@@ -16,8 +16,9 @@ from cn_broker_api.trade.credit_kind import CREDIT_KIND_SIDE, CreditOrderKind
 from cn_broker_api.trade.order_pending_confirm import OrderPendingConfirm
 from cn_broker_api.trade.order_rejected import OrderRejected
 from cn_broker_api.trade.query_unavailable import QueryUnavailable
+from cn_broker_api.drivers.tdxquant.market import snapshot_row
 from cn_broker_api.trade.wire import (CANCELED, FILLED, LIVE, account_row, num,
-                                      order_row, position_row, quote_row)
+                                      order_row, position_row)
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,8 @@ class TdxQuantTrading:
 
     # ---- 行情与标的 ----
     @_vendor_errors()
-    def quotes(self, codes: Sequence[str]) -> List[Dict[str, Any]]:
+    def quotes(self, codes: Sequence[str], *,
+               depth: bool = False) -> List[Dict[str, Any]]:
         """快照。**厂商没有批量接口**，N 个代码就是 N 次调用，别拿它扫全市场。
 
         取不到的代码不出现在结果里（判不了 != 没有这只票）。
@@ -279,10 +281,7 @@ class TdxQuantTrading:
             snap = self._client.query_snapshot(code)
             if not snap:
                 continue
-            out.append(quote_row(symbol=code, last=f(snap, "Now"),
-                                 prev_close=f(snap, "LastClose"),
-                                 bid1=self._level(snap, "Buyp"),
-                                 ask1=self._level(snap, "Sellp")))
+            out.append(snapshot_row(code, snap, depth=depth))
         return out
 
     @staticmethod

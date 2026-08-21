@@ -79,6 +79,41 @@ def quote_row(*, symbol: str, last: Any, prev_close: Any,
             "bid1": num(bid1), "ask1": num(ask1)}
 
 
+def kline_row(*, symbol: str, at: str, open_: Any, high: Any, low: Any, close: Any,
+             volume: Any, amount: Any) -> Dict[str, Any]:
+    """一根 K 线。`at` 是 `YYYYMMDD`（日及以上）或 `YYYYMMDDHHMMSS`（分钟级）。
+
+    单位随响应的 `units` 一起给（K 线的成交量是**股**、成交额是**万元**），
+    因为同一个客户端里两个接口的单位就不一样。
+    """
+    return {"symbol": symbol, "datetime": at, "open": num(open_), "high": num(high),
+            "low": num(low), "close": num(close), "volume": num(volume),
+            "amount": num(amount)}
+
+
+def limit_status_row(*, symbol: str, fields: Dict[str, Any]) -> Dict[str, Any]:
+    """封板状态。**厂商的键名原样转发**，只补 `symbol`、丢掉那个坏的 `Code`。
+
+    ⚠️ 实测厂商的 `Code` 字段是截断的（`".SZ"`）⇒ 代码只认外层那个键。
+    ⚠️ 各字段的语义厂商没写，本服务不猜、不改名：猜错一个键的代价是把「没封板」
+    读成「封住了」。
+    """
+    return {"symbol": symbol,
+            **{k: (None if v is None else str(v)) for k, v in fields.items()
+               if k not in ("Code", "ErrorId")}}
+
+
+def dividend_row(*, symbol: str, date: str, kind: str,
+                 cells: List[Any]) -> Dict[str, Any]:
+    """一次除权除息。四个数值字段的列序抄自厂商源码，**单位未实测**。"""
+    def cell(i: int):
+        return num(cells[i]) if i < len(cells) else None
+
+    return {"symbol": symbol, "date": date, "type": kind,
+            "bonus": cell(0), "allot_price": cell(1),
+            "share_bonus": cell(2), "allotment": cell(3)}
+
+
 def rows_of(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     """从三态响应里取行（给用例用）。"""
     return list(payload.get("rows") or [])
