@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>cn-broker-api</title>
+<!--
+  单文件诊断页。**刻意没有构建步骤**：你要的「随时能改」在引入打包器那一刻就死了。
+  没有框架、没有依赖、没有外部请求——这个页面在一台离线机器上也照样能用。
+
+  四条有讲究的地方：
+  ① 必须显示「数据于 N 秒前」。静默展示旧数据的状态页比没有更糟，人会照着几分钟前的画面
+     做判断。
+  ② 自动轮询只打便宜的 /v1/health（读缓存）；【重新检测】才打 /v1/health/refresh
+     （真去连客户端、占串行槽）。
+  ③ token 存 localStorage，用 fetch 带 Authorization 头。**不放在 URL 里**——那会留在
+     浏览器历史里。
+  ④ 【现在去登录】会真的填密码点【登录】：二次确认，且按钮上方就是"今天提交次数"，
+     让人在点之前先看见还剩几次。真正的闸在服务端，页面上的确认框只是给人看的。
+-->
+<style>
+  :root{--bg:#fbfbfa;--fg:#1a1a19;--dim:#6b6b68;--card:#fff;--line:#e6e5e2;
+        --ok:#1a7f4b;--warn:#9a6b00;--bad:#c0392b;--accent:#2d5a9e}
+  @media (prefers-color-scheme:dark){
+    :root{--bg:#191918;--fg:#eceae5;--dim:#9a9893;--card:#222221;--line:#343330;
+          --ok:#4ec27f;--warn:#d9a83a;--bad:#e8705f;--accent:#7aa8e8}}
+  *{box-sizing:border-box}
+  body{margin:0;padding:20px;background:var(--bg);color:var(--fg);
+       font:14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+  .wrap{max-width:820px;margin:0 auto}
+  h1{font-size:17px;margin:0 0 2px;letter-spacing:.02em}
+  .sub{color:var(--dim);font-size:12px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
+        padding:14px 16px;margin-bottom:12px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;
+           color:var(--dim);margin:0 0 10px;font-weight:600}
+  .row{display:flex;gap:10px;padding:5px 0;align-items:baseline}
+  .row+.row{border-top:1px solid var(--line)}
+  .mark{flex:0 0 18px;font-size:13px}
+  .nm{flex:0 0 116px;color:var(--dim)}
+  .dt{flex:1;min-width:0;word-break:break-word}
+  .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .kv{display:flex;gap:8px;padding:3px 0}
+  .kv b{flex:0 0 132px;font-weight:400;color:var(--dim)}
+  button{font:inherit;padding:6px 13px;border:1px solid var(--line);border-radius:6px;
+         background:var(--card);color:var(--fg);cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.danger{border-color:var(--bad);color:var(--bad)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .age{color:var(--dim);font-size:12px;margin-left:auto}
+  code{font:12px/1.5 ui-monospace,Consolas,monospace;background:var(--bg);
+       padding:1px 5px;border-radius:4px;border:1px solid var(--line)}
+  .caps code{margin-right:5px}
+  .note{color:var(--dim);font-size:12px;margin-top:8px}
+  input[type=password],input[type=text]{font:inherit;padding:6px 9px;border-radius:6px;
+       border:1px solid var(--line);background:var(--bg);color:var(--fg);min-width:210px}
+  .quota{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>cn-broker-api</h1>
+  <div class="sub" id="head">载入中…</div>
+
+  <div class="card">
+    <h2>通道</h2>
+    <div id="checks"><div class="row"><div class="dt">载入中…</div></div></div>
+    <div class="bar">
+      <button id="btn-refresh">重新检测</button>
+      <span class="age" id="age"></span>
+    </div>
+    <div class="note">自动每 5 秒读一次缓存。【重新检测】才真去连客户端——那一项要占用账户串行槽。</div>
+  </div>
+
+  <div class="card">
+    <h2>今天</h2>
+    <div class="kv"><b>交易密码提交</b><span class="quota" id="quota">—</span></div>
+    <div class="kv"><b>手上有密码的账户</b><span id="vault">—</span></div>
+    <div class="kv"><b>上次 ensure</b><span id="last">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>驱动</h2>
+    <div class="kv"><b>驱动 / 契约</b><span id="drv">—</span></div>
+    <div class="kv"><b>密码来源</b><span id="cred">—</span></div>
+    <div class="kv caps"><b>能力</b><span id="caps">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>动作</h2>
+    <div class="bar">
+      <input type="text" id="acct" placeholder="资金账号（留空＝用配置里的）" autocomplete="off">
+      <input type="password" id="pw" placeholder="交易密码（cred_source=request 时）" autocomplete="new-password">
+    </div>
+    <div class="bar">
+      <button class="danger" id="btn-ensure">现在去登录</button>
+      <span id="ensure-msg" class="age"></span>
+    </div>
+    <div class="note">
+      它会**真的**往密码框里填字并点【登录】。上面那行「交易密码提交」是今天的余额——
+      点之前先看一眼。券商的锁定策略未核实，所以服务端每天只放行有限次，失败绝不重试。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>token</h2>
+    <div class="bar">
+      <input type="password" id="tok" placeholder="粘贴 token（存在本浏览器）" autocomplete="off">
+      <button id="btn-tok">保存</button>
+    </div>
+    <div class="note">token 在服务的 state 目录里（启动日志会打印路径）。只存在本浏览器的 localStorage，不进 URL。</div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TOKEN_KEY = "cn_broker_api_token";
+let token = "";
+try { token = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { token = ""; }
+$("tok").value = token;
+
+async function api(path, opts) {
+  const o = Object.assign({headers: {}}, opts || {});
+  o.headers = Object.assign({}, o.headers, token ? {Authorization: "Bearer " + token} : {});
+  if (o.body && typeof o.body !== "string") {
+    o.headers["Content-Type"] = "application/json";
+    o.body = JSON.stringify(o.body);
+  }
+  const r = await fetch(path, o);
+  let body = null;
+  try { body = await r.json(); } catch (e) { body = {message: "响应不是 JSON"}; }
+  return {status: r.status, body};
+}
+
+function mark(c) {
+  if (!c.ok) return ['<span class="bad">✕</span>', "bad"];
+  if (c.warn) return ['<span class="warn">!</span>', "warn"];
+  return ['<span class="ok">✓</span>', "ok"];
+}
+
+function renderHealth(b, status) {
+  if (status === 401) {
+    $("checks").innerHTML = '<div class="row"><div class="dt bad">要先在下面填 token</div></div>';
+    $("age").textContent = ""; return;
+  }
+  const cs = (b && b.checks) || [];
+  $("checks").innerHTML = cs.length ? cs.map(c => {
+    const [m] = mark(c);
+    return `<div class="row"><div class="mark">${m}</div>` +
+           `<div class="nm">${c.name || c.key}</div>` +
+           `<div class="dt">${(c.detail || "").replace(/</g, "&lt;")}</div></div>`;
+  }).join("") : `<div class="row"><div class="dt">${(b && b.message) || "没有检查项"}</div></div>`;
+  // ① 年龄一定要显示——静默展示旧数据比不显示更糟
+  const age = (b && b.age_seconds != null) ? b.age_seconds : null;
+  $("age").textContent = age == null ? "" :
+    (age < 1 ? "刚刚探过" : `数据于 ${age.toFixed(0)} 秒前` + (b.from_cache ? "（缓存）" : ""));
+}
+
+function renderState(b) {
+  if (!b) return;
+  const used = b.submits_used, max = b.submits_max;
+  $("quota").innerHTML = (used == null || max == null) ? "—（当前驱动不填密码）"
+    : `${used} / ${max}` + (used >= max ? ' <span class="bad">已用完，今天不再自动提交</span>' : "");
+  const v = b.accounts_with_password || [];
+  $("vault").textContent = v.length ? v.join("、") : "无（重启后内存里那份就没了，刻意的）";
+  const le = b.last_ensure;
+  $("last").innerHTML = le
+    ? `<span class="${le.ok ? "ok" : "bad"}">${le.ok ? "成功" : "失败"}</span> ${le.at} — ${(le.detail || "").replace(/</g, "&lt;")}`
+    : "还没跑过";
+  $("drv").innerHTML = `<code>${b.driver}</code> / 契约 v${b.contract}`;
+  $("cred").innerHTML = `<code>${b.cred_source}</code>` +
+    (b.cred_source === "file" ? "（服务自己读文件）" : "（随请求下发，只在内存留当天一份）");
+  $("caps").innerHTML = (b.capabilities || []).map(c => `<code>${c}</code>`).join("") || "—";
+}
+
+async function tick() {
+  const h = await api("/v1/health");
+  renderHealth(h.body, h.status);
+  const acct = encodeURIComponent($("acct").value.trim());
+  const s = await api("/v1/state?account=" + acct);
+  if (s.status === 200) renderState(s.body);
+  $("head").textContent = h.status === 200
+    ? "本机券商接入服务 · " + ((h.body && h.body.ok) ? "通道可用" : "通道有问题")
+    : "本机券商接入服务";
+}
+
+$("btn-tok").onclick = () => {
+  token = $("tok").value.trim();
+  try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {}
+  tick();
+};
+
+$("btn-refresh").onclick = async () => {
+  const b = $("btn-refresh"); b.disabled = true; b.textContent = "检测中…";
+  const r = await api("/v1/health/refresh", {method: "POST"});
+  renderHealth(r.body, r.status);
+  b.disabled = false; b.textContent = "重新检测";
+};
+
+$("btn-ensure").onclick = async () => {
+  // ④ 真动作，二次确认。服务端的日闩是真闸，这个框只是给人看的
+  if (!confirm("这会真的往客户端的密码框里填字并点【登录】。\n\n" +
+               "券商在密码连续输错之后的行为未核实，服务端每天只放行有限次、失败不重试。\n\n" +
+               "确定现在登录？")) return;
+  const btn = $("btn-ensure"); btn.disabled = true; btn.textContent = "登录中…";
+  $("ensure-msg").textContent = "可能要等几十秒";
+  const body = {};
+  const a = $("acct").value.trim(); if (a) body.account = a;
+  const p = $("pw").value; if (p) body.password = p;
+  const r = await api("/v1/session/ensure", {method: "POST", body});
+  const m = r.body || {};
+  $("ensure-msg").innerHTML = `<span class="${m.ok ? "ok" : "bad"}">` +
+    `${r.status} ${m.ok ? "成功" : (m.error || "失败")}</span> ` +
+    ((m.detail || m.message || "").replace(/</g, "&lt;"));
+  $("pw").value = "";          // 用过就从界面上清掉
+  btn.disabled = false; btn.textContent = "现在去登录";
+  tick();
+};
+
+tick();
+setInterval(tick, 5000);
+</script>
+</body>
+</html>
