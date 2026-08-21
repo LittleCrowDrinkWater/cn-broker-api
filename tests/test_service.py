@@ -9,7 +9,9 @@ import pytest
 
 from cn_broker_api.config import (CONTRACT_VERSION, Config, HealthConfig, ServerConfig,
                                   TdxQuantConfig)
-from cn_broker_api.drivers.base import Capability, CapabilityMissing, require
+from cn_broker_api.drivers.base import require
+from cn_broker_api.drivers.capability import Capability
+from cn_broker_api.drivers.capability_missing import CapabilityMissing
 from cn_broker_api.drivers.paper import PaperDriver
 from cn_broker_api.http_app import create_app
 from cn_broker_api.state import PasswordVault, SubmitBlocked, SubmitLatch
@@ -41,6 +43,12 @@ def test_foreign_host_is_rejected(client):
     过来。而**这个端口能下单** ⇒ 必须按 Host 挡，不能只靠"只绑回环"。"""
     r = client.get("/v1/meta", headers={**AUTH, "Host": "evil.example.com"})
     assert r.status_code == 421
+
+
+def test_favicon_is_204_not_401(client):
+    """浏览器自己会去要 favicon。让它撞鉴权的话，console 里每次都多一条 401，
+    而那条噪音会把真正该看见的报错淹掉。"""
+    assert client.get("/favicon.ico").status_code == 204
 
 
 def test_status_page_needs_no_token(client):

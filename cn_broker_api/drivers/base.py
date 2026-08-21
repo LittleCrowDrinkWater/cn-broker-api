@@ -30,68 +30,10 @@ HTTP 层 ── 账户亲和串行执行器 ── Driver ── 厂商
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 
-
-class Capability:
-    """能力名。**字符串常量而不是枚举**：它要出现在 HTTP 响应里，跨进程传的是字符串，
-    枚举只会在序列化边界上多一层转换。"""
-
-    CREDIT_ORDER = "credit_order"          # 融资买入 / 卖券还款那一族
-    CANCEL = "cancel"                      # 撤单
-    BID_ASK_QUOTE = "bid_ask_quote"        # 快照带买卖盘口（不只最新价）
-    SELLABLE_VOLUME = "sellable_volume"    # 可卖量单独可查
-    DESKTOP_LOGIN = "desktop_login"        # 能替人把客户端登进去
-    AUTOCONFIRM_PATCH = "autoconfirm_patch"  # 能保证「受理即真发出」
-
-
-class DriverError(Exception):
-    """驱动侧的失败。**传输层与业务层的区分留给各驱动自己**——在这一层强行统一，
-    查询类就再也没法把「查不到」和「真的没有」分开。"""
-
-
-class CapabilityMissing(DriverError):
-    """要的能力这个驱动没有。**明确失败，不降级。**"""
-
-    def __init__(self, capability: str, driver: str) -> None:
-        super().__init__(
-            f"驱动 {driver} 不具备能力 {capability!r} ⇒ 拒绝这次调用。"
-            f"静默降级的表现是「那天等于没调仓」，所以这里宁可报错")
-        self.capability = capability
-        self.driver = driver
-
-
-@dataclass(frozen=True)
-class DesktopRecipe:
-    """一份桌面监护配方——**数据，不是代码**（见模块 docstring）。
-
-    换客户端版本时改这里；`desktop/` 那套机制一行不动。
-    """
-
-    #: 必须在跑的进程（按顺序保证）。⚠️ 交易那一半往往**不会自己起来**：主程序的自动登录
-    #: 只登行情，交易模块要人点一下才拉起，缺它的表现是「既没登上、也没有登录框」的僵局。
-    processes: Tuple[str, ...] = ()
-    #: 进程名 → 安装目录下的相对路径。起进程都不带参数（客户端自己拉起它们时也不带）。
-    executables: Dict[str, str] = field(default_factory=dict)
-    #: 客户端（行情）登录窗的判别标志。⭐ 两个窗口都含密码框，光看"有没有密码框"会把它们
-    #: 混成一个 ⇒ **必须先分类再动手**。
-    client_login_markers: Tuple[str, ...] = ()
-    #: 密码框的类名（厂商的安全输入控件）。标准 Edit 带 `ES_PASSWORD` 位也算，两条判据并列。
-    password_classes: Tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class EnsureResult:
-    """「把状态弄到可用」的结果。`acted` 表示这一趟**真动手过**（过门 / 填过密码）。
-
-    ⭐ `acted` 不是流水账，它决定要不要收窗口：本来就登着的时候不动窗口——那多半是人正
-    看着它。"弄完自动最小化"说的是无人值守那一趟。
-    """
-
-    ok: bool
-    detail: str
-    acted: bool = False
+from cn_broker_api.drivers.capability_missing import CapabilityMissing
+from cn_broker_api.drivers.ensure_result import EnsureResult
 
 
 class Driver(Protocol):

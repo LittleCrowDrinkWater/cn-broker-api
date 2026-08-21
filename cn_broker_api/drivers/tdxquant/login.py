@@ -26,7 +26,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,12 @@ def _children(h: int) -> List[int]:
 
     u32.EnumChildWindows(h, ENUM_CB(cb), 0)
     return out
-def _target_pids() -> Dict[int, str]:
+def _target_pids(names: Sequence[str] = PROCS) -> Dict[int, str]:
+    """枚举目标进程。⚠️ **比对不分大小写**：同一台机器上装两份客户端时，
+    可执行文件名的大小写可以不一样（实测 `Tdxw.exe` 与 `TdxW.exe` 两种拼法都有），
+    而 Windows 文件名本身不区分大小写。区分大小写地比对的表现是「进程明明在跑却判成没跑」
+    ⇒ 看门狗会一遍遍去拉起一个已经在跑的东西。
+    """
     k32 = ctypes.windll.kernel32
 
     class ENTRY(ctypes.Structure):
@@ -136,6 +141,7 @@ def _target_pids() -> Dict[int, str]:
                     ("th32ParentProcessID", w.DWORD), ("pcPriClassBase", ctypes.c_long),
                     ("dwFlags", w.DWORD), ("szExeFile", ctypes.c_char * 260)]
 
+    wanted = {str(n).lower() for n in names}
     snap = k32.CreateToolhelp32Snapshot(0x00000002, 0)
     e = ENTRY()
     e.dwSize = ctypes.sizeof(ENTRY)
@@ -143,12 +149,19 @@ def _target_pids() -> Dict[int, str]:
     if k32.Process32First(snap, ctypes.byref(e)):
         while True:
             name = e.szExeFile.decode("mbcs", "replace")
-            if name in PROCS:
+            if name.lower() in wanted:
                 out[e.th32ProcessID] = name
             if not k32.Process32Next(snap, ctypes.byref(e)):
                 break
     k32.CloseHandle(snap)
     return out
+def running_processes(names: Sequence[str] = PROCS) -> Dict[int, str]:
+    """哪些目标进程在跑：`{pid: 进程名}`。**只读、零成本**——看门狗每分钟醒一次靠的就是它，
+    所以这一步不许连客户端、不许抢任何锁。
+    """
+    return _target_pids(tuple(names))
+
+
 @dataclass
 class Ctl:
     """控件的**只读快照**。识别规则只吃这些字段 ⇒ 可以脱离 Windows 自测。"""

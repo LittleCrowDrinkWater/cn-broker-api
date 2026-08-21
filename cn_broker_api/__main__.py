@@ -62,6 +62,21 @@ def build_driver(cfg):  # noqa: ANN001, ANN201
     return TdxQuantDriver(cfg.tdxquant, latch=latch, vault=PasswordVault())
 
 
+def _log_config(log, cfg) -> None:  # noqa: ANN001
+    """把**全部**配置项连生效值一起打印，并标出哪些在吃默认值。
+
+    ⭐ 「有哪些可配置」不该只存在于文档里：文档会和代码分叉，而这份清单是从生效的那个
+    配置对象上现算出来的，永远同步。
+    ⭐ 「在吃默认值」必须标出来：漏写一项和写了一项写错值，现象完全不同，
+    而只看最终值分不出这两种。
+    """
+    log.info("配置文件 %s", cfg.source_path or "(没找到，全套默认值)")
+    for key, value, from_file in cfg.describe():
+        log.info("  %s %-44s %s", " " if from_file else "~", key, value)
+    log.info("  （~ 开头的是配置文件里没写、在吃默认值的项；"
+             "全部可配置项见仓库里的 config.example.toml）")
+
+
 def main() -> int:
     _init_stdio()
     from cn_broker_api.config import CONTRACT_VERSION, ConfigError, load
@@ -76,18 +91,25 @@ def main() -> int:
     log = logging.getLogger("cn_broker_api")
 
     driver = build_driver(cfg)
-    from cn_broker_api.http_app import create_app, load_or_create_token
+    from cn_broker_api.http_app import SingleFlight, create_app, load_or_create_token
+    from cn_broker_api.state import WatchdogState
+    from cn_broker_api.watchdog import Watchdog
 
     token = load_or_create_token(cfg.token_file)
-    app = create_app(cfg, driver, token=token)
+    # ⭐ 一把单飞锁，看门狗与 `/v1/session/ensure` 共用：各拿一把的表现是两个客户端进程。
+    flight = SingleFlight()
+    dog = Watchdog(driver, cfg.watchdog, flight=flight,
+                   state=WatchdogState(state_dir=cfg.server.state_dir,
+                                       max_starts_per_day=cfg.watchdog.max_starts_per_day))
+    app = create_app(cfg, driver, token=token, flight=flight, watchdog=dog)
 
     log.info("契约 v%s | 驱动 %s | 能力 %s", CONTRACT_VERSION, driver.name,
              ",".join(driver.capabilities()))
-    log.info("配置 %s", cfg.source_path or "(没找到配置文件，全套默认值)")
-    log.info("token %s", cfg.token_file)
+    _log_config(log, cfg)
     log.info("监听 http://%s:%s  ——  诊断页在 /", BIND_HOST, cfg.server.port)
     if cfg.driver == "paper":
         log.warning("当前是**纸面驱动**：不连任何客户端，四项检查恒绿且都标着 warn")
+    dog.start()
 
     from waitress import serve
 

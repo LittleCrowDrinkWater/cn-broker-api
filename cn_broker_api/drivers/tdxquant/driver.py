@@ -19,13 +19,29 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from cn_broker_api.config import TdxQuantConfig
-from cn_broker_api.drivers.base import Capability, DriverError, EnsureResult
+from cn_broker_api.drivers.capability import Capability
+from cn_broker_api.drivers.desktop_recipe import DesktopRecipe
+from cn_broker_api.drivers.driver_error import DriverError
+from cn_broker_api.drivers.ensure_result import EnsureResult
 from cn_broker_api.drivers.tdxquant import health as H
 from cn_broker_api.drivers.tdxquant import login as L
 from cn_broker_api.drivers.tdxquant.mcp import McpClient
 from cn_broker_api.state import PasswordVault, SubmitLatch
 
 logger = logging.getLogger(__name__)
+
+#: 这一版客户端的桌面配方。**数据，不是代码**（见 `drivers/base.py` 那段）：
+#: 换一个更精简的客户端版本，多半是照着写一份新的配方，而不是改机制。
+#:
+#: ⭐ `processes` 的顺序就是**拉起顺序**：主程序先起（本地那个 JSON-RPC 端口是它开的），
+#: 交易模块后起。
+#: ⭐⭐ 交易模块**不会自己起来**：主程序开了自动登录之后，启动只登行情，交易那一半要人在
+#: 界面上点一下【交易】才拉起 ⇒ 于是"既没登上、也没有登录框"这种谁都不动的僵局
+#: （实测等 120 秒也没弹）。所以它必须列在这里，由我们自己拉。
+TDX_RECIPE = DesktopRecipe(
+    processes=("Tdxw.exe", "TC.exe"),
+    executables={"Tdxw.exe": "Tdxw.exe", "TC.exe": str(Path("NewTc") / "TC.exe")},
+)
 
 
 class TdxQuantDriver:
@@ -54,6 +70,30 @@ class TdxQuantDriver:
 
     def client(self) -> McpClient:
         return McpClient(self.cfg.mcp_url)
+
+    # ── 桌面进程（看门狗要的两件事）─────────────────────
+    def desktop_recipe(self) -> DesktopRecipe:
+        return TDX_RECIPE
+
+    def desktop_processes(self) -> Dict[str, bool]:
+        """配方里那几个进程，各自在不在跑。**只读、零成本**——不连客户端、不抢锁。
+
+        ⭐ 「进程在跑」离「能下单」还有三道门（客户端行情登录、交易账户登录、
+        自动确认补丁），所以这个结果**不能当成通道可用**，它只回答最外面那一层。
+        """
+        running = {name.lower() for name in
+                   L.running_processes(TDX_RECIPE.processes).values()}
+        return {n: (n.lower() in running) for n in TDX_RECIPE.processes}
+
+    def start_desktop_process(self, name: str) -> None:
+        """按配方拉起一个进程。**只拉起，绝不 kill**（见 `WatchdogConfig` 那段）。"""
+        rel = TDX_RECIPE.executables.get(name)
+        if not rel:
+            raise DriverError(f"配方里没有 {name!r}，认得的是 {sorted(TDX_RECIPE.executables)}")
+        try:
+            L._spawn(rel)
+        except SystemExit as e:                # _spawn 找不到 exe 时 SystemExit(2)
+            raise DriverError(f"起 {name} 失败（{rel} 找不到？）：{e}") from e
 
     # ── 自检 ─────────────────────────────────────────────
     def health(self, *, account: str = "", account_type: str = "STOCK",

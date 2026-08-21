@@ -56,6 +56,11 @@
   input[type=password],input[type=text]{font:inherit;padding:6px 9px;border-radius:6px;
        border:1px solid var(--line);background:var(--bg);color:var(--fg);min-width:210px}
   .quota{font-variant-numeric:tabular-nums}
+.cfg { font-size: 12px; }
+.crow { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; }
+.cmark { width: 10px; color: #999; flex: none; }
+.crow code { flex: none; min-width: 300px; }
+.cval { color: #444; word-break: break-all; }
 </style>
 </head>
 <body>
@@ -88,6 +93,27 @@
   </div>
 
   <div class="card">
+    <h2>看门狗</h2>
+    <div class="kv"><b>状态</b><span id="wd-state">—</span></div>
+    <div class="kv"><b>客户端进程</b><span id="wd-procs">—</span></div>
+    <div class="kv"><b>今天拉起次数</b><span id="wd-starts">—</span></div>
+    <div class="kv"><b>上次心跳</b><span id="wd-tick">—</span></div>
+    <div class="note">
+      它只保证客户端进程活着，<b>绝不填密码</b>——交易登录仍然只由「现在去登录」那个动作触发。
+      也<b>绝不 kill</b>：只在进程不存在时拉起，因为"没响应"和"没进程"是两件事。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>当前生效配置</h2>
+    <div id="cfg" class="cfg">—</div>
+    <div class="note">
+      <code>~</code> 开头的是配置文件里没写、在吃默认值的项。全部可配置项连说明见仓库里的
+      <code>config.example.toml</code>。改配置要重启服务，没有热加载。
+    </div>
+  </div>
+
+  <div class="card">
     <h2>动作</h2>
     <div class="bar">
       <input type="text" id="acct" placeholder="资金账号（留空＝用配置里的）" autocomplete="off">
@@ -98,7 +124,7 @@
       <span id="ensure-msg" class="age"></span>
     </div>
     <div class="note">
-      它会**真的**往密码框里填字并点【登录】。上面那行「交易密码提交」是今天的余额——
+      它会<b>真的</b>往密码框里填字并点【登录】。上面那行「交易密码提交」是今天的余额——
       点之前先看一眼。券商的锁定策略未核实，所以服务端每天只放行有限次，失败绝不重试。
     </div>
   </div>
@@ -174,12 +200,49 @@ function renderState(b) {
   $("caps").innerHTML = (b.capabilities || []).map(c => `<code>${c}</code>`).join("") || "—";
 }
 
+function renderWatchdog(w) {
+  if (!w) return;
+  // ⭐ 「没开」「开了但线程没起来」「在跑」是三种不同的状态，页面上不能长得一样。
+  $("wd-state").innerHTML = !w.enabled
+    ? '<span class="bad">没开</span>（配置 watchdog.enabled = false）'
+    : (w.running ? `<span class="ok">在跑</span> 每 ${w.interval_seconds} 秒一次，时段 ${w.window}`
+                 + (w.weekdays_only ? "，只工作日" : "")
+                 : '<span class="bad">开着但线程没起来</span>');
+  const pr = w.processes;
+  $("wd-procs").innerHTML = pr
+    ? Object.keys(pr).map(k => `<code class="${pr[k] ? "ok" : "bad"}">${k} ${pr[k] ? "在" : "不在"}</code>`).join(" ")
+    : (w.error ? `<span class="bad">${w.error}</span>` : "—");
+  const st = w.starts_today || {};
+  const names = Object.keys(st);
+  $("wd-starts").innerHTML = names.length
+    ? names.map(k => `${k} ${st[k]} / ${w.max_starts_per_day}`).join("；")
+      + (names.some(k => st[k] >= w.max_starts_per_day)
+         ? ' <span class="bad">已用完，今天不再拉起</span>' : "")
+    : `0 / ${w.max_starts_per_day}`;
+  const lt = w.last_tick;
+  $("wd-tick").innerHTML = lt
+    ? `${lt.at} — ${(lt.reason || lt.action || "").replace(/</g, "&lt;")}`
+    : "还没醒过（或一直被时段闸挡着 —— 那种情况刻意不落盘）";
+}
+
+function renderConfig(rows) {
+  if (!rows) return;
+  $("cfg").innerHTML = rows.map(r =>
+    `<div class="crow"><span class="cmark">${r.from_file ? "" : "~"}</span>` +
+    `<code>${r.key}</code><span class="cval">${String(r.value).replace(/</g, "&lt;")}</span></div>`
+  ).join("");
+}
+
 async function tick() {
   const h = await api("/v1/health");
   renderHealth(h.body, h.status);
   const acct = encodeURIComponent($("acct").value.trim());
   const s = await api("/v1/state?account=" + acct);
-  if (s.status === 200) renderState(s.body);
+  if (s.status === 200) {
+    renderState(s.body);
+    renderWatchdog(s.body.watchdog);
+    renderConfig(s.body.config);
+  }
   $("head").textContent = h.status === 200
     ? "本机券商接入服务 · " + ((h.body && h.body.ok) ? "通道可用" : "通道有问题")
     : "本机券商接入服务";

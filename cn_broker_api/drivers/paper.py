@@ -20,7 +20,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from cn_broker_api.drivers.base import Capability, EnsureResult
+from cn_broker_api.drivers.capability import Capability
+from cn_broker_api.drivers.capability_missing import CapabilityMissing
+from cn_broker_api.drivers.desktop_recipe import DesktopRecipe
+from cn_broker_api.drivers.ensure_result import EnsureResult
 
 
 class PaperDriver:
@@ -38,6 +41,19 @@ class PaperDriver:
         这两件事，谎报会让「能力声明」这个机制失去意义——而它存在的全部价值就是让调用方
         能 fail loud。"""
         return [Capability.CANCEL, Capability.BID_ASK_QUOTE, Capability.SELLABLE_VOLUME]
+
+    def desktop_recipe(self) -> DesktopRecipe:
+        """空配方：纸面驱动没有要看着的进程。⭐ 返回空的而不是抛错——
+        看门狗那侧要能问出「这个驱动没有进程要管」，而不是撞一个异常。"""
+        return DesktopRecipe()
+
+    def desktop_processes(self) -> Dict[str, bool]:
+        return {}
+
+    def start_desktop_process(self, name: str) -> None:
+        """🔴 明确失败。纸面驱动没声明 `DESKTOP_LOGIN`，谁真调到这里就是漏了能力检查——
+        那种情况下静默什么都不做，会让人以为看门狗在工作。"""
+        raise CapabilityMissing(Capability.DESKTOP_LOGIN, self.name)
 
     def health(self, *, account: str = "", account_type: str = "STOCK",
                need_times: Sequence[Tuple[int, int]] = ()) -> Dict[str, Any]:
