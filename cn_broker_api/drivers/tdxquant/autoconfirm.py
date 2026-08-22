@@ -1,4 +1,21 @@
-"""给通达信的「智赢交易信号」页面打自动确认补丁（装 / 卸 / 自检）。
+r"""给通达信的「智赢交易信号」页面打自动确认补丁（装 / 卸 / 自检）。
+
+## 🔴 这一整份是照着**平安证券**的实现写的
+
+二次确认这件事**由券商决定，不是通达信的本地选项**（下面第 4、5 条证据）。所以本模块里
+一切具体的东西——页面路径 `webs/cfg/aireq.html`、组件选择器 `.ai-req`、宿主方法
+`GetAutoJyReqList` / `sendautojy`、行上的 `ZH` / `STATE` / `REQ_ID` / `TIME` 这几列——
+都是从平安下发的那一份 HTML 上读出来的，**换一家券商没有任何理由仍然成立**。
+
+换券商时的三种可能，处置各不相同：
+
+  1. **那家根本不做二次确认** ⇒ 不需要补丁。`order_stock` 直接回 `2`，服务永远不会回 `202`。
+  2. **做，但页面/字段不一样** ⇒ 得重新把那份 HTML 读一遍，照本模块的形状写一份新的。
+     机制（旁挂配置、五道闸、演练档、幂等）可以照抄，选择器与列名必须重新认。
+  3. **做，且客户端根本不给自动化的口子** ⇒ 这条路走不通，只能人工点，或者换客户端。
+
+⇒ 想让服务在别家券商上「受理即真发出」，`AUTOCONFIRM_PATCH` 这个能力就得自己实现一份。
+不实现也能用：服务会在补丁不在时**拒绝受理**（503），委托不会静默躺在队列里等人点。
 
 ## 为什么只能这么做
 
@@ -43,11 +60,11 @@
 
 外加幂等：发过的 `REQ_ID` 按日记进 `localStorage`，页面重载也不会重发同一笔。
 
-用法（工作目录＝项目根）：
-  python -u .claude/skills/cn-data-ops/tdx_autoconfirm_patch.py --status
-  python -u ... --apply --mode cancel      # 演练档
-  python -u ... --apply --mode send        # 生产档
-  python -u ... --remove
+用法（工作目录＝仓库根；客户端安装目录从服务那份配置的 `driver.tdxquant.tdx_home` 读）：
+  .venv\Scripts\python -m cn_broker_api.drivers.tdxquant.autoconfirm --status
+  ... --apply --mode cancel                     # 演练档（默认）：点【取消】，一笔单都不报
+  ... --apply --mode send --account 资金账号     # 生产档
+  ... --remove
 """
 import argparse
 import hashlib
