@@ -279,6 +279,29 @@ def cmd_remove() -> int:
     return rc
 
 
+def _load_tdx_home() -> bool:
+    """独立跑这个命令时，客户端安装目录得自己从配置读一次。
+
+    ⭐ 读的是**服务用的那一份配置**（`CN_BROKER_API_CONFIG` / 默认位置），不是再开一个参数：
+    多一个 `--tdx-home` 就等于多一处可以和配置分叉的地方，而分叉的表现是"自检说没打补丁"
+    这种假警报（2026-08-21 客户端目录改名时踩过一次，当时两份副本各要改一次）。
+    """
+    from cn_broker_api.config import ConfigError, load
+    from cn_broker_api.drivers.tdxquant.health import set_tdx_home
+
+    try:
+        cfg = load()
+    except ConfigError as e:
+        print(f"读配置失败：{e}", file=sys.stderr)
+        return False
+    if not cfg.tdxquant.tdx_home:
+        print("配置里没写 driver.tdxquant.tdx_home ⇒ 不知道客户端装在哪，"
+              "无从找到要打补丁的页面", file=sys.stderr)
+        return False
+    set_tdx_home(cfg.tdxquant.tdx_home)
+    return True
+
+
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
@@ -297,6 +320,8 @@ def main() -> int:
     ap.add_argument("--anytime", action="store_true",
                     help="放开交易时段闸（只给演练用，生产别加）")
     args = ap.parse_args()
+    if not _load_tdx_home():
+        return 2
     if args.status:
         return cmd_status()
     if args.apply:
