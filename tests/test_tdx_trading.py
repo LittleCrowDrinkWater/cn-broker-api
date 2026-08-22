@@ -11,6 +11,7 @@ from cn_broker_api.trade.credit_kind import CreditOrderKind
 from cn_broker_api.trade.order_pending_confirm import OrderPendingConfirm
 from cn_broker_api.trade.order_rejected import OrderRejected
 from cn_broker_api.trade.query_unavailable import QueryUnavailable
+from cn_broker_api.trade.wire import CANCEL_DONE, CANCEL_FILLED, CANCEL_TIMEOUT
 
 
 class _Const:
@@ -155,21 +156,40 @@ def test_cancel_loses_the_race_and_says_so():
     """🔴 「我发了撤单」与「这笔没成交」是两件事。实测撤单中部分成交 1300/20900 股。"""
     c = _FakeClient(orders=[[_order_row()], [_order_row(CjVol=100, Status=3)]])
     res = _trading(c).cancel_order(symbol="000761", order_id="88")
-    assert res["canceled"] is False and "成交" in res["reason"]
+    assert res["outcome"] == CANCEL_FILLED and res["canceled"] is False
+    assert float(res["order"]["filled_size"]) == 100   # 事实要带回去，调用方据此还款
 
 
 def test_cancel_confirmed_when_the_order_leaves_the_book():
     c = _FakeClient(orders=[[]])
     res = _trading(c).cancel_order(symbol="000761", order_id="88")
-    assert res["canceled"] is True
+    assert res["outcome"] == CANCEL_DONE and res["canceled"] is True
 
 
 def test_a_query_blip_during_cancel_is_not_a_confirmed_cancel():
     """🔴 查询抖一下返回 None 时把这一格判成已撤，调用方随即重下 ⇒ 双份成交。
-    判不了就继续等，等到超时按未确认交回。"""
+    判不了就继续等，等到超时按 `timeout` 交回。"""
     c = _FakeClient(orders=[None, None, None])
     res = _trading(c).cancel_order(symbol="000761", order_id="88")
-    assert res["canceled"] is False and "没等到已撤" in res["reason"]
+    assert res["outcome"] == CANCEL_TIMEOUT and res["canceled"] is False
+
+
+def test_timeout_and_filled_are_not_the_same_answer():
+    """🔴🔴 两者都是 `canceled: false`，但一个是**已知事实**、一个是**状态未定**。
+
+    收盘集合竞价这类不受理撤单的时段，每一笔撤单都必然走到 `timeout` 这一格。把它读成
+    「撤单失败」就是给一笔可能还活着的委托写终态——正是 2026-08-12 负债静默过夜那条路。
+    """
+    filled = _trading(
+        _FakeClient(orders=[[_order_row(CjVol=100, Status=3)]])
+    ).cancel_order(symbol="000761", order_id="88")
+    timed_out = _trading(
+        _FakeClient(orders=[[_order_row()], [_order_row()], [_order_row()]])
+    ).cancel_order(symbol="000761", order_id="88")
+
+    assert filled["canceled"] == timed_out["canceled"] is False   # 布尔位分不开它们
+    assert filled["outcome"] != timed_out["outcome"]              # outcome 才分得开
+    assert timed_out["outcome"] == CANCEL_TIMEOUT
 
 
 def test_cancel_is_actually_submitted():
@@ -297,5 +317,5 @@ def test_a_failing_confirm_query_does_not_hide_the_submitted_cancel():
 
     c.query_orders = boom
     res = _trading(c).cancel_order(symbol="000761", order_id="88")
-    assert res["canceled"] is False and "状态未定" in res["reason"]
+    assert res["outcome"] == CANCEL_TIMEOUT and "状态未定" in res["reason"]
     assert c.cancels == [("000761.SZ", "88")]

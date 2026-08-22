@@ -54,8 +54,12 @@ def register(app: Flask, ctx: ApiContext) -> None:
     @app.delete("/v1/orders/<order_id>")
     @maps_failures
     def cancel_order(order_id: str):  # noqa: ANN202
-        """撤单。**「撤完再读一次、按事实定终态」整段在本服务里跑完**，调用方只看结论：
-        `canceled=false` 且 `reason` 说已成交，就是那场比赛输了。"""
+        """撤单。**「撤完再读一次、按事实定终态」整段在本服务里跑完**，调用方只看结论。
+
+        `outcome` 三取一：`canceled` 撤掉了 / `filled` 撤单期间已成交（那场比赛输了）/
+        `timeout` **超时没等到，状态未定**。后两种的 `canceled` 都是 `false`，但只有
+        `filled` 是已知事实；`timeout` 不许当撤单失败记，须重新观测柜台。
+        """
         account, account_type = account_of()
         symbol = str(request.args.get("symbol") or "").strip()
         if not symbol:

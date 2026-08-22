@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from cn_broker_api.symbols import to_tq_code
 from cn_broker_api.trade.credit_kind import CreditOrderKind
-from cn_broker_api.trade.wire import (CANCELED, LIVE, account_row, order_row,
-                                      quote_row)
+from cn_broker_api.trade.wire import (CANCEL_DONE, CANCELED, LIVE, account_row,
+                                      cancel_result, order_row, quote_row)
 
 
 class PaperTrading:
@@ -35,9 +35,9 @@ class PaperTrading:
     def cancel_order(self, *, symbol: str, order_id: str) -> Dict[str, Any]:
         row = self._orders.get(str(order_id))
         if row is None:
-            return {"canceled": True, "order": None, "reason": "不在簿"}
+            return cancel_result(outcome=CANCEL_DONE, reason="不在簿")
         row["status"] = CANCELED
-        return {"canceled": True, "order": row, "reason": "纸面驱动：直接记已撤"}
+        return cancel_result(outcome=CANCEL_DONE, order=row, reason="纸面驱动：直接记已撤")
 
     def get_order(self, *, symbol: str, order_id: str) -> Optional[Dict[str, Any]]:
         return self._orders.get(str(order_id))

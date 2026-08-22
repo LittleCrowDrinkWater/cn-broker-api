@@ -128,6 +128,8 @@ def test_cancel_reports_the_fact(client):
     assert r.status_code == 200
     body = r.get_json()
     assert body["canceled"] is True and body["order"]["status"] == "canceled"
+    # `outcome` 是撤单这条路上唯一分得开「已成交」与「超时没等到」的一位，必须过得了网
+    assert body["outcome"] == "canceled"
 
 
 # ---- 查询三态 ----

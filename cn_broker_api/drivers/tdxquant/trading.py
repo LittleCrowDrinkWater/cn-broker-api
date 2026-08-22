@@ -17,7 +17,8 @@ from cn_broker_api.trade.order_pending_confirm import OrderPendingConfirm
 from cn_broker_api.trade.order_rejected import OrderRejected
 from cn_broker_api.trade.query_unavailable import QueryUnavailable
 from cn_broker_api.drivers.tdxquant.market import snapshot_row
-from cn_broker_api.trade.wire import (CANCELED, FILLED, LIVE, account_row, num,
+from cn_broker_api.trade.wire import (CANCEL_DONE, CANCEL_FILLED, CANCEL_TIMEOUT, CANCELED,
+                                      FILLED, LIVE, account_row, cancel_result, num,
                                       order_row, position_row)
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,13 @@ class TdxQuantTrading:
         不信回执文案（内嵌模拟常误报"提交撤单失败"，实际异步几秒后生效）。
 
          循环里「查不到」不算已撤：查询抖一下就把一笔还活着的委托记成已撤，
-        调用方随即重下 ⇒ 双份成交。判不了就继续等，等到超时按未确认交回。
+        调用方随即重下 ⇒ 双份成交。判不了就继续等。
+
+        三种终局见 `wire.CANCEL_*`。🔴 **超时那一种是「状态未定」，不是「撤单失败」**：
+        柜台在窗口内没报已撤，可能是还没轮到、也可能是这个时段压根不受理撤单（集合竞价段
+        就有这种情况）。它与「已成交」共用 `canceled: false`，但处置相反 ⇒ `outcome` 分开。
+        **不在这里判断"现在是不是不受理撤单的时段"**：那是交易规则，会变，而这个服务不持有
+        交易日历也不该持有；把事实如实报上去，要不要据此特殊处理是调用方的事。
         """
         self.connect()
         self._client.cancel(to_tq_code(symbol), order_id)
@@ -172,17 +179,21 @@ class TdxQuantTrading:
                 o = _QUERY_BLIP
             if o is not _QUERY_BLIP:
                 if o is None:
-                    return {"canceled": True, "order": None, "reason": "不在簿"}
+                    return cancel_result(outcome=CANCEL_DONE, reason="不在簿")
                 if o["status"] in (CANCELED, "expired"):
-                    return {"canceled": True, "order": o, "reason": "柜台已记已撤"}
+                    return cancel_result(outcome=CANCEL_DONE, order=o, reason="柜台已记已撤")
                 if o["status"] == FILLED:
                     # 输掉了比赛：撤单发出去了这笔却已成交。按事实回报，别因为发过撤单就说它撤掉了。
-                    return {"canceled": False, "order": o, "reason": "撤单期间已全部成交"}
+                    return cancel_result(outcome=CANCEL_FILLED, order=o,
+                                         reason="撤单期间已全部成交")
             if time.monotonic() >= deadline:
-                last = None if o is _QUERY_BLIP else o
-                return {"canceled": False, "order": last,
-                        "reason": f"{self._cancel_timeout:.0f} 秒内没等到已撤"
-                                  f"（状态未定，调用方须重新观测）"}
+                logger.warning("[tdx] 撤单 %s/%s 等了 %.0f 秒没等到已撤 ⇒ 状态未定",
+                               symbol, order_id, self._cancel_timeout)
+                return cancel_result(
+                    outcome=CANCEL_TIMEOUT, order=None if o is _QUERY_BLIP else o,
+                    reason=f"{self._cancel_timeout:.0f} 秒内没等到柜台记已撤——**状态未定**，"
+                           f"不是撤单失败；须重新观测柜台。集合竞价等不受理撤单的时段会必然"
+                           f"走到这一格")
             time.sleep(self._cancel_interval)
 
     # ---- 查询 ----

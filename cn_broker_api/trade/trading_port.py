@@ -28,9 +28,11 @@ class Trading(Protocol):
         ...
 
     def cancel_order(self, *, symbol: str, order_id: str) -> Dict[str, Any]:
-        """撤单，返回 `{"canceled": bool, "order": row|None, "reason": str}`。
+        """撤单，返回 `wire.cancel_result(...)`。
 
-        整段「提交撤单 → 重查 → 撤完再读一次、按事实定终态」都在这里面。
+        整段「提交撤单 → 重查 → 撤完再读一次、按事实定终态」都在这里面。终局三种
+        （`wire.CANCEL_*`）：撤掉了 / 撤单期间已成交 / **超时没等到（状态未定）**。
+        最后一种不是失败，调用方须重新观测柜台。
         """
         ...
 

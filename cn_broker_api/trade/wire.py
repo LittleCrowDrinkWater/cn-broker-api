@@ -14,6 +14,11 @@ from typing import Any, Dict, List, Optional
 #: 委托状态取值，与调用方的 `OrderStatus` 一字不差。
 LIVE, PARTIALLY_FILLED, FILLED, CANCELED = "live", "partially_filled", "filled", "canceled"
 
+#: 撤单的三种终局。**`canceled: false` 有两种，处置完全不同**：`CANCEL_FILLED` 是已知事实
+#: （这笔成交了，仓位是真的），`CANCEL_TIMEOUT` 是**状态未定**（超时内没等到柜台记已撤）。
+#: 后者不许当失败记——它随时可能还活着，也可能已经撤掉了。
+CANCEL_DONE, CANCEL_FILLED, CANCEL_TIMEOUT = "canceled", "filled", "timeout"
+
 
 def num(value: Any) -> Optional[str]:
     """数值 → 字符串（`None` 保持 `None`）。"""
@@ -32,6 +37,17 @@ def known(rows: Any) -> Dict[str, Any]:
 
 def unknown(reason: str) -> Dict[str, Any]:
     return {"known": False, "reason": reason}
+
+
+def cancel_result(*, outcome: str, reason: str,
+                  order: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """撤单结论。`canceled` 这一位**由 `outcome` 派生**，两者不可能各说各话。
+
+    `canceled` 留着是因为多数调用方只关心"还用不用管这笔"；要分辨"撤掉了 / 已成交 /
+    没等到"三者的调用方读 `outcome`。
+    """
+    return {"canceled": outcome == CANCEL_DONE, "outcome": outcome,
+            "order": order, "reason": reason}
 
 
 def order_row(*, order_id: Optional[str], symbol: str, side: str, status: str,
