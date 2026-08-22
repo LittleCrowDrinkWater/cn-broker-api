@@ -100,17 +100,18 @@ class TdxQuantTrading:
         Raises:
             OrderPendingConfirm: 推给客户端等人确认。
             OrderRejected: 定性拒单。
-            DriverError: 参数不合法或通道不可用。
+            ValueError: 请求字段不合法（**调用方的 bug**，翻成 400）。
+            DriverError: 通道不可用。
         """
         if order_type != "limit":
-            raise DriverError(f"这条通道只支持限价单，收到 {order_type!r}")
+            raise ValueError(f"这条通道只支持限价单，收到 {order_type!r}")
         if price is None or float(price) <= 0:
-            raise DriverError("限价单要给正的 price")
+            raise ValueError("限价单要给正的 price")
         if int(size) <= 0:
-            raise DriverError(f"委托数量要是正整数，收到 {size!r}")
+            raise ValueError(f"委托数量要是正整数，收到 {size!r}")
         side = str(side).strip().lower()
         if side not in ("buy", "sell"):
-            raise DriverError(f"side 只能是 buy / sell，收到 {side!r}")
+            raise ValueError(f"side 只能是 buy / sell，收到 {side!r}")
 
         self.connect()
         tqc = self._client.tqconst
@@ -129,13 +130,18 @@ class TdxQuantTrading:
                          symbol=code, side=side, status=LIVE, size=int(size), price=price)
 
     def _credit_order_type(self, tqc: Any, kind: CreditOrderKind, side: str) -> int:
-        """信用委托类型 -> tqconst 编号。两道闸都在发单**之前**。"""
+        """信用委托类型 -> tqconst 编号。两道闸都在发单**之前**。
+
+        闸没过一律 `ValueError`（400）而不是 `DriverError`（503）：这两种失败要人去看的
+        地方相反——503 说的是"客户端没开/交易没登"，把一次方向配反的委托报成它，
+        排查会从错的一头开始。编号表缺常量才是真的环境问题，那条仍是 `DriverError`。
+        """
         if not self.is_credit:
-            raise DriverError(f"账户类别 {self._client.account_type} 不能下信用委托 "
-                              f"{kind.name}——融资/融券类委托只在 CREDIT 账户上合法")
+            raise ValueError(f"账户类别 {self._client.account_type} 不能下信用委托 "
+                             f"{kind.name}——融资/融券类委托只在 CREDIT 账户上合法")
         want = CREDIT_KIND_SIDE[kind]
         if side != want:
-            raise DriverError(f"信用委托 {kind.name} 的方向必须是 {want}，收到 {side}")
+            raise ValueError(f"信用委托 {kind.name} 的方向必须是 {want}，收到 {side}")
         try:
             return getattr(tqc, kind.value)
         except AttributeError as e:

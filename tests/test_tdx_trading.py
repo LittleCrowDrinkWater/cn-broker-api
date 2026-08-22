@@ -92,9 +92,29 @@ def test_a_reject_is_a_reject():
         _trading(c).create_order(symbol="603230", side="buy", size=100, price=9.9)
 
 
+@pytest.mark.parametrize("bad", [
+    {"side": "long"}, {"size": 0}, {"size": -100}, {"price": 0.0}, {"order_type": "market"},
+])
+def test_bad_arguments_are_caller_bugs_not_channel_failures(bad):
+    """报单参数不合法一律 `ValueError`（400）。
+
+    这几道闸都在 `connect()` **之前**，所以 400 同时意味着"这一趟什么都没发生"——
+    而 `DriverError`（503）说的是"客户端没开/交易没登"，两者要人去看的地方相反。
+    """
+    c = _FakeClient()
+    args = {"symbol": "000761", "side": "buy", "size": 100, "price": 4.8, **bad}
+    with pytest.raises(ValueError):
+        _trading(c).create_order(**args)
+    assert not c.sent                       # 一个字节都没发出去
+
+
 def test_credit_order_needs_a_credit_account():
-    """普通账户报 69 号回来的是一句看不懂的柜台码 ⇒ 在发出**之前**就拒。"""
-    with pytest.raises(DriverError, match="CREDIT"):
+    """普通账户报 69 号回来的是一句看不懂的柜台码 ⇒ 在发出**之前**就拒。
+
+    ⚠️ 抛的必须是 `ValueError`（400＝调用方的 bug），**不是 `DriverError`**：后者翻成 503
+    「通道不可用」，会把人支去查客户端开没开。
+    """
+    with pytest.raises(ValueError, match="CREDIT"):
         _trading(_FakeClient()).create_order(symbol="000761", side="buy", size=100,
                                              price=4.8,
                                              credit_kind=CreditOrderKind.FIN_BUY)
@@ -103,7 +123,7 @@ def test_credit_order_needs_a_credit_account():
 def test_credit_kind_must_match_the_side():
     """把「卖券还款」报成买入是无意义的委托，而正T 两条腿共用一段代码、方向是变量。"""
     c = _FakeClient(account_type="CREDIT")
-    with pytest.raises(DriverError, match="方向"):
+    with pytest.raises(ValueError, match="方向"):
         _trading(c).create_order(symbol="000761", side="buy", size=100, price=4.8,
                                  credit_kind=CreditOrderKind.STK_REPAY)
 

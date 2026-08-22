@@ -30,13 +30,22 @@ def register(app: Flask, ctx: ApiContext) -> None:
         credit_kind = parse_credit_kind(body.get("credit_kind"))
         if credit_kind is not None:
             require(ctx.driver, Capability.CREDIT_ORDER)
+        # 字段校验在入口做完：不合法的请求不该先占一个账户串行槽再失败，而各驱动的严格程度
+        # 并不一致（纸面驱动压根不校验）⇒ 400 由这里保证，驱动里那几道留作最后一闸。
+        side = str(body.get("side") or "").strip().lower()
+        if side not in ("buy", "sell"):
+            raise ValueError(f"side 只能是 buy / sell，收到 {body.get('side')!r}")
         size = _int(body.get("size"), "size")
+        if size <= 0:
+            raise ValueError(f"size 要是正整数，收到 {size}")
         price = _float(body.get("price"), "price")
+        if price <= 0:
+            raise ValueError(f"price 要是正数，收到 {price}")
         notify = None if body.get("notify") is None else _int(body.get("notify"), "notify")
 
         row = in_queue(ctx, account, account_type, f"报单 {symbol}",
                        lambda t: t.create_order(
-                           symbol=symbol, side=str(body.get("side") or ""), size=size,
+                           symbol=symbol, side=side, size=size,
                            price=price, order_type=str(body.get("order_type") or "limit"),
                            client_order_id=body.get("client_order_id"),
                            credit_kind=credit_kind, notify=notify))

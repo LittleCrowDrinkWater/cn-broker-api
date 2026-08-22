@@ -87,6 +87,20 @@ def test_bad_size_is_400_not_500(client):
     assert r.status_code == 400
 
 
+@pytest.mark.parametrize("bad", [
+    {"side": "long"}, {"side": ""}, {"size": 0}, {"size": -100}, {"price": 0}, {"price": -1},
+])
+def test_illegal_order_fields_are_400_and_never_reach_the_driver(client, bad):
+    """字段不合法＝调用方的 bug ⇒ 400，且**不占账户串行槽**（压根不排队）。
+
+    ⚠️ 别让它变成 503：503 的意思是"到客户端那条通道不可用"，排查会从错的一头开始。
+    """
+    r = client.post("/v1/orders", json={**ORDER, **bad}, headers=AUTH)
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "bad_request"
+    assert client.get("/v1/orders", headers=AUTH).get_json()["rows"] == []
+
+
 def test_unknown_credit_kind_is_400(client):
     """认不出的 credit_kind **不能静默忽略**：忽略的表现是"我以为报的是融资买入，
     其实报的是普通买入"，而两者的负债完全不同。"""

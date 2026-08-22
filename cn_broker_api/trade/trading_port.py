@@ -22,7 +22,8 @@ class Trading(Protocol):
         Raises:
             OrderPendingConfirm: 推给客户端等人确认（**不是拒单**）。
             OrderRejected: 定性拒单。
-            DriverError: 通道不可用。
+            ValueError: 请求字段不合法（**调用方的 bug**，翻成 400）。
+            DriverError: 通道不可用（翻成 503 ⇒ 说的是"客户端没开/交易没登"）。
         """
         ...
 
