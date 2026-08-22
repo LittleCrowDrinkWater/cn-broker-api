@@ -46,7 +46,7 @@ class PaperTrading:
         return list(self._orders.values())
 
     def get_positions(self) -> List[Dict[str, Any]]:
-        """恒空。⭐ 空表在这里是**真的空**（纸面驱动没有持仓），不是"判不了"——
+        """恒空。 空表在这里是**真的空**（纸面驱动没有持仓），不是"判不了"——
         两者的区别正是这套契约最要紧的一位。"""
         return []
 
@@ -54,7 +54,7 @@ class PaperTrading:
         return {}
 
     def get_account(self) -> Optional[Dict[str, Any]]:
-        """一个全零的账户。⭐ 不返回 `None`：`None` 的语义是「取不到」，
+        """一个全零的账户。 不返回 `None`：`None` 的语义是「取不到」，
         而纸面驱动是真的知道自己没有钱。"""
         return account_row(total_equity=0, total_available=0)
 

@@ -43,7 +43,7 @@ TICK_UNITS = {"volume": "lots", "amount": "wan_yuan"}
 def validate_klines(codes: Sequence[str], period: str, count: int):
     """把 K 线请求校成 (代码表, 周期, 根数)。
 
-    ⭐ 校验放在**这一个函数**里，路由与驱动都调它：只在驱动里校，纸面驱动那条路就没人拦；
+     校验放在**这一个函数**里，路由与驱动都调它：只在驱动里校，纸面驱动那条路就没人拦；
     只在路由里校，直接调驱动的脚本就没人拦。两处各写一份，数字迟早分叉。
     """
     period = str(period).strip().lower()
@@ -126,7 +126,7 @@ class TdxQuantMarketData:
         return out
 
     def prices(self, codes: Sequence[str]) -> List[Dict[str, Any]]:
-        """一次调用拿一批的现价 / 昨收 / 成交量。⚠️ 成交量单位是**手**（K 线那边是股）。"""
+        """一次调用拿一批的现价 / 昨收 / 成交量。 成交量单位是**手**（K 线那边是股）。"""
         res = self._call("get_pricevol", {"stock_list": self._codes(codes)})
         if str(res.get("ErrorId", "0")) != "0":
             raise QueryUnavailable(f"取批量报价失败：{res.get('Error') or res}")
@@ -141,8 +141,8 @@ class TdxQuantMarketData:
     def limit_status(self, codes: Sequence[str]) -> List[Dict[str, Any]]:
         """封板状态：封单量、首次/最后封板时刻、开板次数。
 
-        ⚠️ 它**不给涨跌停价格**（那还是要按板别与昨收自己算）。
-        ⚠️ 字段语义厂商没写，本服务**原样转发厂商的键名**，不猜、不改名——
+         它**不给涨跌停价格**（那还是要按板别与昨收自己算）。
+         字段语义厂商没写，本服务**原样转发厂商的键名**，不猜、不改名——
         猜错一个键的代价是把一个"没封板"读成"封住了"。
         """
         res = self._call("get_zdt_data", {"stock_list": self._codes(codes)}, timeout=60.0)
@@ -158,9 +158,9 @@ class TdxQuantMarketData:
     def dividends(self, code: str, *, start: str = "", end: str = "") -> List[Dict[str, Any]]:
         """除权除息事件。
 
-        ⚠️ **日期区间由本服务过滤**：厂商源码里写着「C接口的时间没有实际作用，返回的是所有
+         **日期区间由本服务过滤**：厂商源码里写着「C接口的时间没有实际作用，返回的是所有
         权息数据」——它那侧的过滤是在 Python 层做的，而我们不走它那层。
-        ⚠️ 四个数值字段照抄厂商源码里的列名（Bonus / AllotPrice / ShareBonus / Allotment），
+         四个数值字段照抄厂商源码里的列名（Bonus / AllotPrice / ShareBonus / Allotment），
         **单位没有实测过** ⇒ 拿它算复权因子之前先与已有来源对一遍。
         """
         tq_code = to_tq_code(code)
@@ -215,7 +215,7 @@ def snapshot_row(code: str, snap: Dict[str, Any], *,
 
 
 def _book(snap: Dict[str, Any], price_key: str, size_key: str) -> List[Dict[str, Any]]:
-    """五档。⭐ 封板时买一那档的挂单量就是封单量，这是要 depth 的主要原因。"""
+    """五档。 封板时买一那档的挂单量就是封单量，这是要 depth 的主要原因。"""
     prices = snap.get(price_key)
     sizes = snap.get(size_key)
     if not isinstance(prices, (list, tuple)):

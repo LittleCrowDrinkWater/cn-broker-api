@@ -4,20 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>cn-broker-api</title>
-<!--
-  单文件诊断页。**刻意没有构建步骤**：你要的「随时能改」在引入打包器那一刻就死了。
-  没有框架、没有依赖、没有外部请求——这个页面在一台离线机器上也照样能用。
-
-  四条有讲究的地方：
-  ① 必须显示「数据于 N 秒前」。静默展示旧数据的状态页比没有更糟，人会照着几分钟前的画面
-     做判断。
-  ② 自动轮询只打便宜的 /v1/health（读缓存）；【重新检测】才打 /v1/health/refresh
-     （真去连客户端、占串行槽）。
-  ③ token 存 localStorage，用 fetch 带 Authorization 头。**不放在 URL 里**——那会留在
-     浏览器历史里。
-  ④ 【现在去登录】会真的填密码点【登录】：二次确认，且按钮上方就是"今天提交次数"，
-     让人在点之前先看见还剩几次。真正的闸在服务端，页面上的确认框只是给人看的。
--->
+<!-- 单文件诊断页：无构建步骤、无框架、无外部请求，离线也能用。
+     四处刻意为之：必须显示读数年龄（静默展示旧数据比没有更糟）；轮询只读缓存，
+     【重新检测】才真去连客户端；token 存 localStorage 不进 URL（会留在浏览器历史里）；
+     【现在去登录】二次确认，真闸在服务端。 -->
 <style>
   :root{--bg:#fbfbfa;--fg:#1a1a19;--dim:#6b6b68;--card:#fff;--line:#e6e5e2;
         --ok:#1a7f4b;--warn:#9a6b00;--bad:#c0392b;--accent:#2d5a9e}
@@ -51,9 +41,9 @@
   .age{color:var(--dim);font-size:12px;margin-left:auto}
   code{font:12px/1.5 ui-monospace,Consolas,monospace;background:var(--bg);
        padding:1px 5px;border-radius:4px;border:1px solid var(--line)}
-  .caps code{margin-right:5px}
+  .caps span{display:flex;flex-wrap:wrap;gap:5px}
   .note{color:var(--dim);font-size:12px;margin-top:8px}
-  input[type=password],input[type=text]{font:inherit;padding:6px 9px;border-radius:6px;
+  input[type=password],input[type=text],select{font:inherit;padding:6px 9px;border-radius:6px;
        border:1px solid var(--line);background:var(--bg);color:var(--fg);min-width:210px}
   .quota{font-variant-numeric:tabular-nums}
 .cfg { font-size: 12px; }
@@ -67,6 +57,23 @@
 <div class="wrap">
   <h1>cn-broker-api</h1>
   <div class="sub" id="head">载入中…</div>
+  <div class="card" id="banner" style="display:none"></div>
+
+  <div class="card">
+    <h2>看哪个账户</h2>
+    <div class="bar">
+      <input type="text" id="acct" placeholder="资金账号（留空＝客户端的默认账户）" autocomplete="off">
+      <select id="atype">
+        <option value="STOCK">普通（STOCK）</option>
+        <option value="CREDIT">信用/两融（CREDIT）</option>
+      </select>
+    </div>
+    <div class="note">
+      这两项决定下面那四项检查问的是<b>哪个</b>账户，也决定【现在去登录】登哪个。
+      两者必须成对：信用账号选成「普通」，柜台回的是「资金账户未登录或不存在」——
+      那句话读起来像客户端没登录，其实只是类别选错了。填过就记在本浏览器里。
+    </div>
+  </div>
 
   <div class="card">
     <h2>通道</h2>
@@ -116,7 +123,6 @@
   <div class="card">
     <h2>动作</h2>
     <div class="bar">
-      <input type="text" id="acct" placeholder="资金账号（留空＝用配置里的）" autocomplete="off">
       <input type="password" id="pw" placeholder="交易密码（cred_source=request 时）" autocomplete="new-password">
     </div>
     <div class="bar">
@@ -142,9 +148,23 @@
 <script>
 const $ = (id) => document.getElementById(id);
 const TOKEN_KEY = "cn_broker_api_token";
-let token = "";
-try { token = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { token = ""; }
+const ACCT_KEY = "cn_broker_api_account";
+const ATYPE_KEY = "cn_broker_api_account_type";
+// localStorage 在隐私窗口/禁站点数据时会直接抛，读写都得包起来
+const ls = {
+  get(k, dflt) { try { return localStorage.getItem(k) || dflt; } catch (e) { return dflt; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+};
+let token = ls.get(TOKEN_KEY, "");
 $("tok").value = token;
+$("acct").value = ls.get(ACCT_KEY, "");
+$("atype").value = ls.get(ATYPE_KEY, "STOCK");
+
+// 账号与类别必须成对送过去：厂商按 (账号, 类别) 找账户句柄，只送账号就是在问另一个账户
+function acctParams() {
+  return "account=" + encodeURIComponent($("acct").value.trim()) +
+         "&account_type=" + encodeURIComponent($("atype").value);
+}
 
 async function api(path, opts) {
   const o = Object.assign({headers: {}}, opts || {});
@@ -167,7 +187,7 @@ function mark(c) {
 
 function renderHealth(b, status) {
   if (status === 401) {
-    $("checks").innerHTML = '<div class="row"><div class="dt bad">要先在下面填 token</div></div>';
+    $("checks").innerHTML = '<div class="row"><div class="dt bad">要先在最下面填 token</div></div>';
     $("age").textContent = ""; return;
   }
   const cs = (b && b.checks) || [];
@@ -202,7 +222,7 @@ function renderState(b) {
 
 function renderWatchdog(w) {
   if (!w) return;
-  // ⭐ 「没开」「开了但线程没起来」「在跑」是三种不同的状态，页面上不能长得一样。
+  // 「没开」「开了但线程没起来」「在跑」是三种不同的状态，页面上不能长得一样。
   $("wd-state").innerHTML = !w.enabled
     ? '<span class="bad">没开</span>（配置 watchdog.enabled = false）'
     : (w.running ? `<span class="ok">在跑</span> 每 ${w.interval_seconds} 秒一次，时段 ${w.window}`
@@ -233,30 +253,47 @@ function renderConfig(rows) {
   ).join("");
 }
 
+function banner(html) {
+  const el = $("banner");
+  el.style.display = html ? "" : "none";
+  el.innerHTML = html || "";
+}
+
 async function tick() {
-  const h = await api("/v1/health");
+  const h = await api("/v1/health?" + acctParams());
   renderHealth(h.body, h.status);
-  const acct = encodeURIComponent($("acct").value.trim());
-  const s = await api("/v1/state?account=" + acct);
+  const s = await api("/v1/state?" + acctParams());
   if (s.status === 200) {
     renderState(s.body);
     renderWatchdog(s.body.watchdog);
     renderConfig(s.body.config);
   }
+  // 401 下面这几张卡全停在「—」，看起来像服务坏了 ⇒ 必须在顶上说明白是缺 token
+  banner(s.status === 401
+    ? '<b class="bad">还没填 token，所以下面几乎全是空的。</b>' +
+      ' 到本页最下面那张卡里粘贴 token —— 它在服务的 state 目录（<code>token.txt</code>），启动日志也打印过。'
+    : (s.status !== 200
+       ? '<b class="bad">读不到服务状态（' + s.status + '）。</b> ' +
+         ((s.body && (s.body.message || s.body.error)) || "")
+       : ""));
   $("head").textContent = h.status === 200
     ? "本机券商接入服务 · " + ((h.body && h.body.ok) ? "通道可用" : "通道有问题")
     : "本机券商接入服务";
 }
 
+$("acct").oninput = () => ls.set(ACCT_KEY, $("acct").value.trim());
+$("acct").onchange = tick;
+$("atype").onchange = () => { ls.set(ATYPE_KEY, $("atype").value); tick(); };
+
 $("btn-tok").onclick = () => {
   token = $("tok").value.trim();
-  try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {}
+  ls.set(TOKEN_KEY, token);
   tick();
 };
 
 $("btn-refresh").onclick = async () => {
   const b = $("btn-refresh"); b.disabled = true; b.textContent = "检测中…";
-  const r = await api("/v1/health/refresh", {method: "POST"});
+  const r = await api("/v1/health/refresh?" + acctParams(), {method: "POST"});
   renderHealth(r.body, r.status);
   b.disabled = false; b.textContent = "重新检测";
 };
@@ -268,7 +305,7 @@ $("btn-ensure").onclick = async () => {
                "确定现在登录？")) return;
   const btn = $("btn-ensure"); btn.disabled = true; btn.textContent = "登录中…";
   $("ensure-msg").textContent = "可能要等几十秒";
-  const body = {};
+  const body = {account_type: $("atype").value};
   const a = $("acct").value.trim(); if (a) body.account = a;
   const p = $("pw").value; if (p) body.password = p;
   const r = await api("/v1/session/ensure", {method: "POST", body});
@@ -281,6 +318,8 @@ $("btn-ensure").onclick = async () => {
   tick();
 };
 
+// 首屏五张卡都停在「—」，"正在加载"和"真的没数据"长得一样 ⇒ 先挂一条载入中
+banner("载入中…");
 tick();
 setInterval(tick, 5000);
 </script>

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 def _vendor_errors(*, mutating: bool = False) -> Callable:
     """把厂商那侧的传输层失败翻译成本服务的错误分类。
 
-    🔴 **只有会改变状态的调用（报单/撤单）才把读超时算成 `AckUnknown`（504）**：那种情况下
+     **只有会改变状态的调用（报单/撤单）才把读超时算成 `AckUnknown`（504）**：那种情况下
     请求已经发出去了、只是没等到答复，而报单超时不代表没报出去。查询超时没有这一层——
     把它也报成 504 会让调用方为了一次快照没答话去熔断对账。
     """
@@ -150,7 +150,7 @@ class TdxQuantTrading:
         1300/20900 股）⇒ 整段循环必须在本服务里跑完，调用方只看最终事实。
         不信回执文案（内嵌模拟常误报"提交撤单失败"，实际异步几秒后生效）。
 
-        🔴 循环里「查不到」不算已撤：查询抖一下就把一笔还活着的委托记成已撤，
+         循环里「查不到」不算已撤：查询抖一下就把一笔还活着的委托记成已撤，
         调用方随即重下 ⇒ 双份成交。判不了就继续等，等到超时按未确认交回。
         """
         self.connect()
@@ -160,8 +160,8 @@ class TdxQuantTrading:
             try:
                 o = self.get_order(symbol=symbol, order_id=order_id)
             except (QueryUnavailable, DriverError) as e:
-                # 🔴 确认查询本身失败也只是「本轮判不了」。撤单已经提交出去了，
-                #    这时候往上抛「通道不可用」，调用方会以为什么都没发生。
+                # 确认查询失败只是本轮判不了：撤单已经提交出去了，这时抛「通道不可用」会让
+                # 调用方以为什么都没发生。
                 logger.warning("[tdx] 撤单确认这一轮查不到（%s），继续等", str(e)[:120])
                 o = _QUERY_BLIP
             if o is not _QUERY_BLIP:
@@ -170,8 +170,7 @@ class TdxQuantTrading:
                 if o["status"] in (CANCELED, "expired"):
                     return {"canceled": True, "order": o, "reason": "柜台已记已撤"}
                 if o["status"] == FILLED:
-                    # 输掉了比赛：撤单发出去了，这笔却已经成交。**按事实回报**，
-                    # 不要因为"我发过撤单"就说它撤掉了。
+                    # 输掉了比赛：撤单发出去了这笔却已成交。按事实回报，别因为发过撤单就说它撤掉了。
                     return {"canceled": False, "order": o, "reason": "撤单期间已全部成交"}
             if time.monotonic() >= deadline:
                 last = None if o is _QUERY_BLIP else o
@@ -232,7 +231,7 @@ class TdxQuantTrading:
     def get_sellable(self) -> Dict[str, Optional[str]]:
         """`{代码: 可卖股数}`（`CanUseVol`，T+1 当日买入为 0）。
 
-        🔴 判不了一律抛 `QueryUnavailable`，**绝不折成空表**：空表被当成事实的后果是
+         判不了一律抛 `QueryUnavailable`，**绝不折成空表**：空表被当成事实的后果是
         「每只都不能卖」⇒ 卖出腿一股不报（调仓那条腿是整天不换仓，正T 那条腿是
         当日融资买入不还款＝负债过夜）。
         """
@@ -299,7 +298,7 @@ class TdxQuantTrading:
     def instrument(self, code: str) -> Optional[Dict[str, Any]]:
         """标的静态信息。`margin_target` 三态：True / False / `None`＝判不了。
 
-        🔴 它只回答**能不能融资买入**（`BelongRZRQ`）。担保品名单是另一回事——301616 被拒
+         它只回答**能不能融资买入**（`BelongRZRQ`）。担保品名单是另一回事——301616 被拒
         「非担保品标的」时 BelongRZRQ 仍是 1，别拿这一个字段去挡担保品买入。
         """
         self.connect()

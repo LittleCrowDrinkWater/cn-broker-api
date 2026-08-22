@@ -55,7 +55,7 @@ def _dotted_keys(raw: Dict[str, Any], prefix: str = "") -> list:
 def _first_existing() -> Path:
     """候选位置里第一个真存在的；都不存在就返回默认那个（让报错文案指向它）。
 
-    ⭐ 返回默认那个而不是 None：「配置在哪」这句话在报错里必须是具体路径，
+     返回默认那个而不是 None：「配置在哪」这句话在报错里必须是具体路径，
     不然人不知道该把文件放哪儿。
     """
     for c in candidates():

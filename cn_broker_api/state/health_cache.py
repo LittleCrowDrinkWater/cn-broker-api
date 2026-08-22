@@ -1,6 +1,6 @@
 """健康检查结果的内存缓存。
 
-🔴 **便宜是硬要求**：「交易账号登录了没」那一项要连客户端、查一次资产，几秒钟且占用
+ **便宜是硬要求**：「交易账号登录了没」那一项要连客户端、查一次资产，几秒钟且占用
 账户串行槽。诊断页每 5 秒轮询一次的话，不缓存等于整天骚扰交易通道
 ⇒ `GET /v1/health` 读缓存，只有 `POST /v1/health/refresh` 才真去探。"""
 from __future__ import annotations
@@ -19,7 +19,7 @@ class HealthCache:
     def __init__(self, ttl_seconds: int = 30) -> None:
         self.ttl = max(0, int(ttl_seconds))
         self._lock = threading.Lock()
-        #: 🔴 **按键分开存**：不同调用方问的账号/时刻不一样，共用一份缓存会让 A 读到
+        #: **按键分开存**：不同调用方问的账号/时刻不一样，共用一份缓存会让 A 读到
         #: "按 B 的参数判"的结论。共用一格是这类缓存最典型的一种静默错。
         self._entries: Dict[str, CachedHealth] = {}
 

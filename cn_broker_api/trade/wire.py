@@ -94,8 +94,8 @@ def kline_row(*, symbol: str, at: str, open_: Any, high: Any, low: Any, close: A
 def limit_status_row(*, symbol: str, fields: Dict[str, Any]) -> Dict[str, Any]:
     """封板状态。**厂商的键名原样转发**，只补 `symbol`、丢掉那个坏的 `Code`。
 
-    ⚠️ 实测厂商的 `Code` 字段是截断的（`".SZ"`）⇒ 代码只认外层那个键。
-    ⚠️ 各字段的语义厂商没写，本服务不猜、不改名：猜错一个键的代价是把「没封板」
+     实测厂商的 `Code` 字段是截断的（`".SZ"`）⇒ 代码只认外层那个键。
+     各字段的语义厂商没写，本服务不猜、不改名：猜错一个键的代价是把「没封板」
     读成「封住了」。
     """
     return {"symbol": symbol,

@@ -29,9 +29,9 @@ logger = logging.getLogger(__name__)
 #: 这一版客户端的桌面配方。**数据，不是代码**（见 `drivers/base.py` 那段）：
 #: 换一个更精简的客户端版本，多半是照着写一份新的配方，而不是改机制。
 #:
-#: ⭐ `processes` 的顺序就是**拉起顺序**：主程序先起（本地那个 JSON-RPC 端口是它开的），
+#: `processes` 的顺序就是**拉起顺序**：主程序先起（本地那个 JSON-RPC 端口是它开的），
 #: 交易模块后起。
-#: ⭐⭐ 交易模块**不会自己起来**：主程序开了自动登录之后，启动只登行情，交易那一半要人在
+#: 交易模块**不会自己起来**：主程序开了自动登录之后，启动只登行情，交易那一半要人在
 #: 界面上点一下【交易】才拉起 ⇒ 于是"既没登上、也没有登录框"这种谁都不动的僵局
 #: （实测等 120 秒也没弹）。所以它必须列在这里，由我们自己拉。
 TDX_RECIPE = DesktopRecipe(
@@ -51,9 +51,8 @@ class TdxQuantDriver:
         self.cfg = cfg
         self.latch = latch
         self.vault = vault or PasswordVault()
-        # 把「唯一出处」注入进那两份搬来的模块：安装根目录、MCP 地址、凭据路径。
-        # ⭐ 注入而不是让它们各自读配置——两处各推一份的话，换客户端时改一处、
-        #    另一处静默指向不存在的目录，而「文件不在」会被自检读成「补丁没打」。
+        # 注入而不是让搬来的那两份各自读配置：两处各推一份的话换客户端时漏改一处，
+        # 表现是自检把「文件不在」读成「补丁没打」。
         H.set_tdx_home(cfg.tdx_home)
         set_pyplugins((cfg.tdx_home / "PYPlugins") if cfg.tdx_home else None)
         L.set_mcp_url(cfg.mcp_url)
@@ -61,7 +60,7 @@ class TdxQuantDriver:
 
     # ── 能力 ─────────────────────────────────────────────
     def capabilities(self) -> List[str]:
-        """⭐ 行情那一族只在 mcp 通道上声明：它是照着客户端那个 JSON-RPC 端口写的，
+        """行情那一族只在 mcp 通道上声明：它是照着客户端那个 JSON-RPC 端口写的，
         ctypes 通道上没实现。谎报的表现是调用方过了能力闸然后撞一个看不懂的错。"""
         caps = [Capability.CREDIT_ORDER, Capability.CANCEL, Capability.BID_ASK_QUOTE,
                 Capability.SELLABLE_VOLUME, Capability.DESKTOP_LOGIN,
@@ -82,7 +81,7 @@ class TdxQuantDriver:
     def trading(self, *, account: str = "", account_type: str = "STOCK") -> TdxQuantTrading:
         """这个账户上的交易与查询。
 
-        ⭐ 现构现用：底下那条连接是**进程级共享**的，`connect()` 命中同一个身份就短路，
+         现构现用：底下那条连接是**进程级共享**的，`connect()` 命中同一个身份就短路，
         所以这里没有要缓存的东西。身份含账号与类别（`ConnKey`），换账户才会真重连。
         """
         client = TdxQuantClient(
@@ -99,7 +98,7 @@ class TdxQuantDriver:
     def desktop_processes(self) -> Dict[str, bool]:
         """配方里那几个进程各自在不在跑。**只读、零成本**，不连客户端、不抢锁。
 
-        ⭐ 「进程在跑」离「能下单」还有三道门 ⇒ 这个结果不能当成通道可用。
+         「进程在跑」离「能下单」还有三道门 ⇒ 这个结果不能当成通道可用。
         """
         running = {name.lower() for name in
                    L.running_processes(TDX_RECIPE.processes).values()}
@@ -119,7 +118,7 @@ class TdxQuantDriver:
     def minimize_desktop(self) -> int:
         """把客户端窗口收起来，返回收了几个。
 
-        ⭐ 无人值守那一趟结束时才该收：人正看着它的时候动窗口很讨厌，
+         无人值守那一趟结束时才该收：人正看着它的时候动窗口很讨厌，
         所以 `ensure` 只在**真动手过**的那一趟收（见 `EnsureResult.acted`）。
         """
         return L.minimize_client(L._target_pids(TDX_RECIPE.processes))
@@ -127,8 +126,8 @@ class TdxQuantDriver:
     def screenshot(self) -> "tuple[bytes, str]":
         """抓当时那个窗口的位图，返回 (PNG 字节, 说明)。
 
-        🔴 **只在内存里过一遍，绝不落盘**：位图会把账号、持仓、资产原样拍进去。
-        ⭐ 有登录框就抓登录框——排查的时候要看的正是「它到底弹了个什么框」。
+         **只在内存里过一遍，绝不落盘**：位图会把账号、持仓、资产原样拍进去。
+         有登录框就抓登录框——排查的时候要看的正是「它到底弹了个什么框」。
         """
         import io
 
@@ -192,8 +191,7 @@ class TdxQuantDriver:
                                   account_type=account_type)
         acc = str(cred.get("account") or "")
 
-        # ⭐⭐ 先看「是不是已经好了」，好了就直接返回——**不占用密码额度**。
-        # 这一步就是「状态驱动而不是弹框驱动」在编排层的体现：真登录只在需要时发生。
+        # 先看是不是已经好了，好了直接返回，不占密码额度（状态驱动而非弹框驱动）。
         ok, detail = L.channel_ok(cred)
         if ok:
             return EnsureResult(ok=True, acted=False, detail=detail)
@@ -204,11 +202,10 @@ class TdxQuantDriver:
             ok, detail = L.ensure_logged_in(
                 cred, wait=wait_seconds, start=start, minimize=minimize)
         except SystemExit as e:        # login._spawn 找不到 exe 时会 SystemExit(2)
-            # 🔴 **刻意不结算**：`claim()` 已经先按失败记过，这里让它留着。
-            #    起不来客户端与密码错在这一层分不开，而保守那一边的代价小得多。
+            # 刻意不结算：`claim()` 已按失败记过，这里让它留着——起不来客户端与密码错在这一层
+            # 分不开，保守那边的代价小得多。
             raise DriverError(f"起客户端失败：{e}") from e
-        # ⭐ 必须结算：不调的表现是「登录成功了，但连续失败计数一直涨」，
-        #    几天之后那个闸会把自己关死。
+        # 必须结算：不调的表现是「登录成功了但连续失败计数一直涨」，几天后那个闸会自己关死。
         self.latch.settle(acc, ok)
         return EnsureResult(ok=ok, detail=detail, acted=True)
 

@@ -1,20 +1,13 @@
-"""桌面客户端的自动登录：把通达信客户端起起来、登进交易，直到**交易通道可用**。
+"""桌面客户端的自动登录：把客户端起起来、登进交易，直到交易通道可用。
 
-这一层是 UI 自动化，与 `tdxquant_client`（跟客户端说话）、`channel_health`（判通道好不好）
-分工明确：**它只负责把状态从"没登"推到"登上了"**，判"登上了没有"一律借 `channel_health`
-的第②项——判据只有一份。
+分工：本模块只负责把状态从"没登"推到"登上了"；"登上了没有"一律借 `health` 的第②项判，
+判据只有一份。登录框的实测形态与四道安全闸见下面各函数。
 
-放在 backend 而不是 skill 脚本里，是因为 09:00 那条定时任务要用它，而后端不能依赖
-`.claude/skills` 下的脚本（那是给人手动跑的入口）。命令行入口仍在
-`.claude/skills/cn-data-ops/tdx_login.py`，它只做参数解析与 dry-run 展示。
+一句话：风险不是"登不上"，而是**交易密码连续输错会被券商锁一天** ⇒ 认不准就中止、
+填完先核对再提交、一次调用只提交一次、永不重试。
 
-登录框的实测形态、四道安全闸、为什么不写死坐标，见那个 CLI 的模块 docstring 与下面各函数。
-一句话：**风险不是"登不上"，而是「交易密码连续输错会被券商锁一天」**，所以
-认不准就中止、填完先核对再提交、一次调用只提交一次、永不重试。
-
-⚠️ Windows 专用（`ctypes.windll`）。为了让别的平台仍能 import 本模块（CI、单测收集），
-`u32/g32` 在非 Windows 上是 `None`，真去调的函数会因此报错——这是刻意的：**在能跑的地方跑，
-在不能跑的地方明确失败**，而不是 import 期就把整个后端拖挂。
+Windows 专用（`ctypes.windll`）。非 Windows 上 `u32/g32` 是 `None`，真去调才报错——
+在能跑的地方跑、在不能跑的地方明确失败，而不是 import 期就把服务拖挂。
 """
 import ctypes
 import ctypes.wintypes as w
@@ -55,11 +48,11 @@ def _say(msg: str) -> None:
         print(msg)
 
 
-#: ⭐ **stdout 与 stderr 都要归一**：后端 logger 写的是 stderr，只归一 stdout 的话
+#: **stdout 与 stderr 都要归一**：后端 logger 写的是 stderr，只归一 stdout 的话
 #: 真跑那次的日志全是乱码——而这脚本存在的意义就是出问题时给人看诊断信息。
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-#: ⚠️ **刻意不声明 DPI 感知**：客户端是 DPI 不感知进程。保持不感知 ⇒ `GetWindowRect`、
+#: **刻意不声明 DPI 感知**：客户端是 DPI 不感知进程。保持不感知 ⇒ `GetWindowRect`、
 #: `PrintWindow` 给的位图、我们 Post 出去的客户区坐标全在同一套（虚拟化后的）坐标里。
 #: 上次声明了感知去点 CEF 页面，四种点击方式"全失败"，差点误判成"Chromium 不接受合成输入"。
 u32 = ctypes.windll.user32 if _WIN else None
@@ -87,7 +80,7 @@ def set_cred_path(path: Optional[Path]) -> None:
     CRED_PATH = Path(path) if path else None
 PROCS = ("TC.exe", "Tdxw.exe")
 #: **客户端(行情)登录窗**的判别标志：它有这几个按钮，交易登录框没有。
-#: ⭐ 两个窗口都含 `SafeEdit`，光看"有没有密码框"会把它们混成一个 ⇒ 必须先分类再动手
+#: 两个窗口都含 `SafeEdit`，光看"有没有密码框"会把它们混成一个 ⇒ 必须先分类再动手
 #: （2026-08-21 实测：`--start` 起来先弹的是这一个，它有**两个**可填 SafeEdit，
 #: 直接套交易登录那套规则会被"认不准"闸挡下来——挡对了，但也说明分类不能省）。
 CLIENT_LOGIN_MARKERS = ("游客登录", "扫码登录", "短信登录")
@@ -127,7 +120,7 @@ def _children(h: int) -> List[int]:
     u32.EnumChildWindows(h, ENUM_CB(cb), 0)
     return out
 def _target_pids(names: Sequence[str] = PROCS) -> Dict[int, str]:
-    """枚举目标进程。⚠️ **比对不分大小写**：同一台机器上装两份客户端时，
+    """枚举目标进程。 **比对不分大小写**：同一台机器上装两份客户端时，
     可执行文件名的大小写可以不一样（实测 `Tdxw.exe` 与 `TdxW.exe` 两种拼法都有），
     而 Windows 文件名本身不区分大小写。区分大小写地比对的表现是「进程明明在跑却判成没跑」
     ⇒ 看门狗会一遍遍去拉起一个已经在跑的东西。
@@ -205,7 +198,7 @@ def pick_password(ctls: List[Ctl]) -> Ctl:
 def pick_account(ctls: List[Ctl], want: str) -> Ctl:
     """认出**装着资金账号的那个框**并要求它等于配置里的账号。
 
-    ⭐ 这里做的是**核对而不是填写**：账号由客户端"记住账号"带出来，界面上那个是 DUI 画的，
+     这里做的是**核对而不是填写**：账号由客户端"记住账号"带出来，界面上那个是 DUI 画的，
     真值在一个隐藏 `Edit` 里。核对的价值在于——「默认账户」解析成谁随登录状态变，
     而这是**交易**，绝不能"以为登的是 A、其实登的是 B"。
     """
@@ -238,9 +231,9 @@ def visible_tops(pids: Dict[int, str]) -> Dict[int, str]:
 def close_new_popups(pids: Dict[int, str], known: Dict[int, str], keep: int) -> int:
     """把点击之后**新冒出来的**窗口关掉（二维码那种中间窗），返回关了几个。
 
-    ⭐ 判据是**差集**而不是"标题里有二维码"：这是别人的魔改版，中间窗是什么、叫什么都不好说，
+     判据是**差集**而不是"标题里有二维码"：这是别人的魔改版，中间窗是什么、叫什么都不好说，
     但"点之前没有、点之后有"这件事是稳的。
-    🔴 两样绝不碰：主窗口（`MAIN_FRAME_CLASS`）与登录窗自己（`keep`）——把主窗口关了等于
+     两样绝不碰：主窗口（`MAIN_FRAME_CLASS`）与登录窗自己（`keep`）——把主窗口关了等于
     把客户端杀了，而这一步的全部意义是让客户端活着登进去。
     """
     n = 0
@@ -257,16 +250,16 @@ def pass_client_login(dlg: int, ctls: List[Ctl], *, guest: bool = False,
                       seconds: int = 40, tries: int = 3) -> bool:
     """过第一道门：**点它自己的按钮**，一个字都不填。
 
-    ⭐ 那些按钮是**真 Button**（`BM_CLICK` 打得动），只是被皮肤盖住、样式里标着不可见
+     那些按钮是**真 Button**（`BM_CLICK` 打得动），只是被皮肤盖住、样式里标着不可见
     ——所以这里**不能**按"可见"过滤按钮。
-    ⭐⭐ 【游客登录】实测要点**两次**：第一次先弹一个二维码窗，叉掉之后再点才真进去
+     【游客登录】实测要点**两次**：第一次先弹一个二维码窗，叉掉之后再点才真进去
     （用户实测；这是"开心果整合版"的行为）。所以做成 `点 → 关掉新冒出来的窗 → 再点` 的循环，
     而不是"点一次然后等"。【登录】（记住密码那条路）点一次就过，同一段代码兼容。
     """
     want = "游客登录" if guest else "登录"
     btns = [c for c in ctls if c.cls.lower() == "button" and c.text.strip() == want]
     if len(btns) != 1:
-        _say(f"❌ 客户端登录窗里找不到唯一的【{want}】按钮（找到 {len(btns)} 个）")
+        _say(f"[!] 客户端登录窗里找不到唯一的【{want}】按钮（找到 {len(btns)} 个）")
         return False
     btn = btns[0]
     _say(f"  点【{want}】（0x{btn.hwnd:x}，真 Button ⇒ BM_CLICK，不用坐标）")
@@ -281,7 +274,7 @@ def pass_client_login(dlg: int, ctls: List[Ctl], *, guest: bool = False,
             if close_new_popups(pids_of(dlg), before, dlg):
                 break                              # 关掉了中间窗 ⇒ 立刻再点一次
             time.sleep(0.5)
-    _say(f"❌ 点了 {tries} 次、{seconds} 秒内还没过第一道门"
+    _say(f"[!] 点了 {tries} 次、{seconds} 秒内还没过第一道门"
           + ("（游客那条路要连点两次，中间窗可能没关掉）" if guest else
              "（这条路要客户端记着行情密码；没记住就改用 --guest）"))
     return False
@@ -355,7 +348,7 @@ def grab(h: int):
 def find_red_button(img) -> Optional[Tuple[int, int, int, int]]:
     """按颜色找【登录】那块红，返回 (x0, y0, x1, y1)（窗口坐标）。
 
-    ⭐ 按颜色而不是写死坐标：这个框是定尺寸的，但写死坐标是"下次换版就静默点到别处"，
+     按颜色而不是写死坐标：这个框是定尺寸的，但写死坐标是"下次换版就静默点到别处"，
     而点错地方在登录框上可能就是一次错误尝试。只扫右侧白底面板（左边整块是橙色插画）。
     """
     px = img.load()
@@ -433,7 +426,7 @@ def clear_field(c: Ctl, n: int = 32) -> None:
 def minimize_client(pids) -> int:
     """把客户端主窗口最小化。返回最小化了几个窗口。
 
-    ⭐ 只动**主窗口**（`TdxW_MainFrame_Class`），不碰「交易信号」那个队列窗口——它是独立顶层，
+     只动**主窗口**（`TdxW_MainFrame_Class`），不碰「交易信号」那个队列窗口——它是独立顶层，
     而且**隐藏着也照常工作**（2026-08-20 实测：窗口关掉只是隐藏，自动确认脚本仍在跑）。
     最小化不会影响 MCP 端口（进程内的 socket）与行情连接，这一点跑完用四项自检复核。
     """
@@ -451,7 +444,7 @@ def minimize_client(pids) -> int:
 def channel_ok(cred: dict) -> Tuple[bool, str]:
     """现在交易通道通不通（一次连接 + 查资产）。返回 (通不通, 一句话)。
 
-    ⭐ 判据是**账户句柄 + 资产字段**，与 09:15 那步通道自检共用同一段代码 ⇒ 判据只有一份。
+     判据是**账户句柄 + 资产字段**，与 09:15 那步通道自检共用同一段代码 ⇒ 判据只有一份。
     连不上/没登录都只是"还没好"，不是异常——本函数从不抛。
     """
     from cn_broker_api.drivers.tdxquant.health import check_account
@@ -479,12 +472,12 @@ def verify_logged_in(cred: dict, *, seconds: int = 45) -> bool:
                               account_type=str(cred.get("account_type") or "STOCK"))
             last = r.detail
             if r.ok:
-                _say(f"✅ 登录已生效：{r.detail}")
+                _say(f"[ok] 登录已生效：{r.detail}")
                 return True
         except Exception as e:  # noqa: BLE001 — 登录过程中连接失败是常态，等下一轮
             last = f"{type(e).__name__}: {str(e)[:110]}"
         time.sleep(2.5)
-    _say(f"❌ {seconds} 秒内没等到登录生效。最后一次：{last}")
+    _say(f"[!] {seconds} 秒内没等到登录生效。最后一次：{last}")
     return False
 class CredMissing(Exception):
     """凭据文件不在/不全。**可捕获的异常**而不是 `SystemExit`：定时任务要把它翻译成"跳过"
@@ -511,7 +504,7 @@ def _spawn(rel: str) -> None:
 
     exe = tdx_install_root() / rel
     if not exe.exists():
-        _say(f"✗ 找不到 {exe}")
+        _say(f"[!] 找不到 {exe}")
         raise SystemExit(2)
     _say(f"启动 {exe}")
     subprocess.Popen([str(exe)], cwd=str(exe.parent), close_fds=True)
@@ -521,7 +514,7 @@ def start_client() -> None:
 def start_trade_module() -> None:
     """交易那一半（`NewTc/TC.exe`，32 位）。
 
-    ⭐⭐ **它不会自己起来**：客户端开了自动登录之后，`Tdxw.exe` 启动只登行情，交易模块要人在
+     **它不会自己起来**：客户端开了自动登录之后，`Tdxw.exe` 启动只登行情，交易模块要人在
     界面上点一下【交易】才拉起 ⇒ 于是"既没登上、也没有登录框"这种谁都不动的僵局
     （2026-08-21 实测，等 120 秒也没弹）。自己 `Popen` 它就行：实测 4 秒后交易登录框就出来了，
     与客户端自己拉起它的命令行一样（都不带参数）。
@@ -537,7 +530,7 @@ def _do_trade_login(dlg: int, ctls: List[Ctl], cred: dict) -> bool:
         if btn is None:
             raise Ambiguous("没找到【登录】那块红（界面换版了？先 --probe --shot 看一眼）")
     except Ambiguous as e:
-        _say(f"❌ 认不准，**中止**：{e}\n"
+        _say(f"[!] 认不准，中止：{e}\n"
               f"   （认错的代价是密码输错，连着几次就锁一天 ⇒ 宁可不动手）")
         return False
     ox, oy, _w, _h = _wrect(dlg)
@@ -554,7 +547,7 @@ def _do_trade_login(dlg: int, ctls: List[Ctl], cred: dict) -> bool:
     _say(f"  密码框里星号总宽 {got}px（{len(pwd)} 个字符应当在 {lo:.0f}~{hi:.0f}px）")
     if not (lo <= got <= hi):
         clear_field(pw_c)
-        _say("❌ 宽度核不上 ⇒ 按键可能掉了几个。**已清空、不提交**（不提交＝不算一次错误尝试）")
+        _say(" 宽度核不上 ⇒ 按键可能掉了几个。**已清空、不提交**（不提交＝不算一次错误尝试）")
         return False
     _say(f"  核对过了，点【登录】（客户区 {bcx},{bcy}）——只点一次，失败不重试")
     click(dlg, bcx, bcy)
@@ -567,16 +560,16 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
                      guest: bool = False, minimize: bool = True) -> Tuple[bool, str]:
     """把"交易通道可用"这件事做成。返回 (成不成, 一句话)。
 
-    ⭐⭐ **状态驱动，不是弹框驱动**：目标是"通道可用"，不是"把某个框填了"。客户端自己开了
+     **状态驱动，不是弹框驱动**：目标是"通道可用"，不是"把某个框填了"。客户端自己开了
     自动登录之后启动就直接登进行情、压根不弹框，而"等登录框"那种写法会把"本来就好了"
     读成超时失败（2026-08-21 实测踩到）。所以循环是 `已登上? → 有框? → 处理`
     ⇒ **天生幂等**，定时任务可以放心反复跑。
 
-    ⭐ `start=True` 时**两个进程都要保证**：`Tdxw.exe`（行情+量化，MCP 端口的主人）与
-    `NewTc/TC.exe`（交易）。🔴 后者**不会自己起来**——客户端的自动登录只登行情，交易模块要人
+     `start=True` 时**两个进程都要保证**：`Tdxw.exe`（行情+量化，MCP 端口的主人）与
+    `NewTc/TC.exe`（交易）。 后者**不会自己起来**——客户端的自动登录只登行情，交易模块要人
     在界面上点【交易】才拉起，缺它的表现是"既没登上、也没有登录框"的僵局。
 
-    🔴 **失败绝不重试**：密码连续输错会被券商锁一天。失败就如实返回，让上层去告警。
+     **失败绝不重试**：密码连续输错会被券商锁一天。失败就如实返回，让上层去告警。
     """
     if not _WIN:
         return False, "只能在 Windows 上跑（客户端是 Windows 程序）"
@@ -602,11 +595,9 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
     while True:
         ok, detail = channel_ok(cred)
         if ok:
-            # ⭐ **本来就登着的话不去动窗口**：那多半是人正在看着它。只有这一趟真登过
-            # （`acted`）才收起来——"弄完自动最小化"说的是那种情况。
+            # 本来就登着就不动窗口（多半是人正在看它），只有这一趟真登过才收起来。
             if minimize and acted:
-                # ⭐ **只在确认可用之后才最小化**：失败时把窗口收起来，等于把唯一能看出哪里
-                # 不对的东西藏起来（那会儿多半有个错误框正等着人看）。
+                # 只在确认可用之后才最小化：失败时收窗口等于把唯一能看出哪里不对的东西藏起来。
                 got = minimize_client(_target_pids())
                 _say(f"已把客户端最小化（{got} 个窗口）——它照常连着")
             return True, detail

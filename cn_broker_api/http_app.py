@@ -2,7 +2,7 @@
 
 路由按关注点分在 `api/` 下，每组一个模块、各自一个 `register(app, ctx)`。
 
-⭐ `cache` / `flight` / `queue` 由本函数各建**一份**再传下去，见 `api/context.py`。
+ `cache` / `flight` / `queue` 由本函数各建**一份**再传下去，见 `api/context.py`。
 """
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ __all__ = ["create_app", "load_or_create_token", "SingleFlight"]
 def load_or_create_token(path: Path) -> str:
     """读 token，没有就生成一个并落盘（0600 语义靠目录权限，Windows 上尽力而为）。
 
-    🔴 **没有 token 就不启动**是刻意的（fail closed）：一个无鉴权的本机端点，机器上任何
+     **没有 token 就不启动**是刻意的（fail closed）：一个无鉴权的本机端点，机器上任何
     进程、任何打开的网页都能打，而它能下单。自动生成让"第一次跑"不难受，但不放宽这条。
     """
     path.parent.mkdir(parents=True, exist_ok=True)

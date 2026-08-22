@@ -1,8 +1,8 @@
 """入口：`python -m cn_broker_api`。
 
-🔴 只绑 127.0.0.1，且**刻意不做成配置项**：这个端口能下单，一个配置项的存在本身就是
+ 只绑 127.0.0.1，且**刻意不做成配置项**：这个端口能下单，一个配置项的存在本身就是
 在邀请别人去改它。
-⭐ stdout 与 stderr **都**归一到 utf-8：本机控制台是 GBK，中文会在最不该崩的时候崩
+ stdout 与 stderr **都**归一到 utf-8：本机控制台是 GBK，中文会在最不该崩的时候崩
 （登录流程正走到一半）；logging 默认写 stderr，只归一 stdout 等于没归一。
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ import logging
 import sys
 from pathlib import Path
 
-#: ⚠️ 只绑回环，且**刻意不从配置读**（见模块 docstring）。
+#: 只绑回环，且**刻意不从配置读**（见模块 docstring）。
 BIND_HOST = "127.0.0.1"
 
 
@@ -58,7 +58,7 @@ def build_driver(cfg):  # noqa: ANN001, ANN201
 def _log_config(log, cfg) -> None:  # noqa: ANN001
     """把**全部**配置项连生效值一起打印，并标出哪些在吃默认值。
 
-    ⭐ 清单从生效的配置对象上现算，不会和代码分叉；标出默认值是因为「漏写一项」和
+     清单从生效的配置对象上现算，不会和代码分叉；标出默认值是因为「漏写一项」和
     「写了一项写错值」现象完全不同，而只看最终值分不出来。
     """
     log.info("配置文件 %s", cfg.source_path or "(没找到，全套默认值)")
@@ -87,7 +87,7 @@ def main() -> int:
     from cn_broker_api.watchdog import Watchdog
 
     token = load_or_create_token(cfg.token_file)
-    # ⭐ 一把单飞锁，看门狗与 `/v1/session/ensure` 共用：各拿一把的表现是两个客户端进程。
+    # 一把单飞锁，看门狗与 `/v1/session/ensure` 共用：各拿一把的表现是两个客户端进程。
     flight = SingleFlight()
     dog = Watchdog(driver, cfg.watchdog, flight=flight,
                    state=WatchdogState(state_dir=cfg.server.state_dir,
@@ -104,8 +104,8 @@ def main() -> int:
 
     from waitress import serve
 
-    # threads=8：本服务的并发极低（一个使用者 + 一个诊断页），但登录那一趟会占住一个线程
-    # 几十秒，所以不能只给 1~2 个，否则那期间连 /v1/health 都打不动。
+    # threads=8：并发极低，但登录那一趟会占住一个线程几十秒，给 1~2 个的话那期间
+    # 连 /v1/health 都打不动。
     serve(app, host=BIND_HOST, port=cfg.server.port, threads=8,
           ident="cn-broker-api")
     return 0

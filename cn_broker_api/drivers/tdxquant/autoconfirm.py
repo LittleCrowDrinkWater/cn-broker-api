@@ -1,66 +1,47 @@
 r"""给通达信的「智赢交易信号」页面打自动确认补丁（装 / 卸 / 自检）。
 
-## 🔴 这一整份是照着**平安证券**的实现写的
+## 这一整份是照着平安证券的实现写的
 
-二次确认这件事**由券商决定，不是通达信的本地选项**（下面第 4、5 条证据）。所以本模块里
-一切具体的东西——页面路径 `webs/cfg/aireq.html`、组件选择器 `.ai-req`、宿主方法
-`GetAutoJyReqList` / `sendautojy`、行上的 `ZH` / `STATE` / `REQ_ID` / `TIME` 这几列——
-都是从平安下发的那一份 HTML 上读出来的，**换一家券商没有任何理由仍然成立**。
-
-换券商时的三种可能，处置各不相同：
-
-  1. **那家根本不做二次确认** ⇒ 不需要补丁。`order_stock` 直接回 `2`，服务永远不会回 `202`。
-  2. **做，但页面/字段不一样** ⇒ 得重新把那份 HTML 读一遍，照本模块的形状写一份新的。
-     机制（旁挂配置、五道闸、演练档、幂等）可以照抄，选择器与列名必须重新认。
-  3. **做，且客户端根本不给自动化的口子** ⇒ 这条路走不通，只能人工点，或者换客户端。
-
-⇒ 想让服务在别家券商上「受理即真发出」，`AUTOCONFIRM_PATCH` 这个能力就得自己实现一份。
-不实现也能用：服务会在补丁不在时**拒绝受理**（503），委托不会静默躺在队列里等人点。
+二次确认由**券商**决定，不是通达信的本地选项（证据见下）。所以这里一切具体的东西——页面
+`webs/cfg/aireq.html`、选择器 `.ai-req`、宿主方法 `GetAutoJyReqList` / `sendautojy`、
+行上的 `ZH` / `STATE` / `REQ_ID` / `TIME`——都是从平安下发的那份 HTML 上读出来的，换一家
+没有任何理由仍然成立。三种可能，处置各不相同：那家不做二次确认（不需要补丁，`order_stock`
+直接回 2）／做但页面字段不同（机制照抄，选择器与列名必须重新认）／做且不给自动化的口子
+（只能人工点或换客户端）。不实现这个能力也能用：补丁不在时服务拒绝受理（503），
+委托不会静默躺在队列里等人点。
 
 ## 为什么只能这么做
 
-实盘账户上 `order_stock` 回的是三态里的 `1`「已发送信号至客户端，待用户确认！」，委托进到
-客户端一个**队列窗口**（顶层 `#32770`、标题 `交易信号`，内容是 CEF 里的
-`webs/cfg/aireq.html`，`<title>智赢交易信号</title>`），要人点【发送】才真报到柜台。
-
-2026-08-20 把「能不能关掉」这条路走死了，五条证据：
-
-  1. 量化模块没有这个开关——TPyth.dll 的中文字符串全列过，`实盘交易/模拟交易/交易信号`
-     那三个是策略列表的**筛选下拉**（`rva 0xce40` 那个函数 `CB_ADDSTRING` 填进去的）；
-  2. 信号队列**没有设置页**：`webs/cfg/` 下与它相关的只有 `aireq.html`；
-  3. 菜单与配置里没有入口（`funcs/ funcs_jy/ *.xmb *.dat tdxmenu.html` 全扫过）；
-  4. **`GetAutoJyReqList` / `sendautojy` 这些方法名在整个安装目录 4322 个文件里只出现在
-     那个 HTML 里**——宿主侧一个字符串都没有 ⇒ 这套是券商下发/服务端派发的，不是本地选项；
-  5. 厂商原话：「对于**实盘交易账户**是提示下单让用户确认」「实盘交易账户的自动下单请
-     联系你的开户券商，开通并使用对应的支持 TQ 的版本」。
-
-⇒ 按**账户类别 + 券商授权**决定，本地无解。于是退一步：让那个页面自己按规则点自己的按钮。
+实盘账户上 `order_stock` 回三态里的 `1`「已发送信号至客户端，待用户确认！」，委托进到客户端
+一个队列窗口（顶层 `#32770`、标题 `交易信号`，内容是 CEF 里的 `aireq.html`），要人点【发送】
+才真报到柜台。2026-08-20 把「能不能关掉」这条路走死了，五条证据：量化模块没有这个开关
+（TPyth.dll 中文串全列过，那三个是策略列表的筛选下拉）；信号队列没有设置页；菜单与配置里
+没有入口；`GetAutoJyReqList` / `sendautojy` 在整个安装目录 4322 个文件里**只出现在那个 HTML
+里**，宿主侧一个字符串都没有 ⇒ 这套是券商下发的；厂商原话是「实盘交易账户的自动下单请联系
+你的开户券商」。⇒ 按账户类别 + 券商授权决定，本地无解，于是退一步让那个页面自己点自己的按钮。
 
 ## 补丁形态
 
 不动那个 minified 的 Vue 包，只在 `</body>` 前插一段带标记的脚本，靠
-`document.querySelector(".ai-req").__vue__` 拿到组件实例，调**它自己的** `send()`
-（与人点按钮同一个函数），并且：
+`document.querySelector(".ai-req").__vue__` 拿到组件实例，调它自己的 `send()`（与人点按钮
+同一个函数）。配置放在旁挂文件 `tq_autosend.js`，加载不到就什么都不做（fail closed）——
+删掉它、或客户端升级把 HTML 冲掉，都是自动失效回到手工确认，不存在"以为关了其实还在发"。
+页脚有可见徽标（开/关、演练/生产）。`mode="cancel"` 是演练档：命中时调 `cancel()`，
+用来验"脚本加载→拿到实例→规则命中→宿主命令执行"整条链，且一分钱都不会报出去。
 
-  * 配置放在**旁挂文件** `tq_autosend.js`。加载不到 ⇒ 什么都不做（**fail closed**）：
-    删掉它、或客户端升级把 HTML 冲掉，都是自动失效回到手工确认，不存在"以为关了其实还在发"；
-  * 页脚显示可见徽标，当前是开还是关、是演练还是生产，看一眼就知道；
-  * `mode="cancel"` 是**演练档**：规则命中时调 `cancel()` 而不是 `send()`，
-    用来验"脚本加载→拿到实例→规则命中→宿主命令执行"整条链，且一分钱都不会报出去。
-
-## 五道闸（必须同时成立才动手）
+## 五道闸（必须同时成立才动手）+ 幂等
 
 | 闸 | 挡什么 |
 | --- | --- |
 | `account` 匹配 `ZH` | 别的账户的信号 |
 | `STATE==="0"` | 已发送/已取消的历史行 |
-| 行龄 ≤ `maxAgeSec` | **早上没人确认的陈旧信号在下午被顺手一起发出去**（最危险的一格） |
+| 行龄 ≤ `maxAgeSec` | 早上没人确认的陈旧信号在下午被顺手发出去（最危险的一格） |
 | 落在 `hours` 里 | 盘后的探针单、误触 |
-| 限价 + 量/金额上限 | 我们的路径只发限价单；出现市价单或超额就不是我们的 |
+| 限价 + 量/金额上限 | 我们只发限价单；出现市价单或超额就不是我们的 |
 
-外加幂等：发过的 `REQ_ID` 按日记进 `localStorage`，页面重载也不会重发同一笔。
+发过的 `REQ_ID` 按日记进 `localStorage`，页面重载也不会重发同一笔。
 
-用法（工作目录＝仓库根；客户端安装目录从服务那份配置的 `driver.tdxquant.tdx_home` 读）：
+用法（工作目录＝仓库根；客户端目录从配置的 `driver.tdxquant.tdx_home` 读）：
   .venv\Scripts\python -m cn_broker_api.drivers.tdxquant.autoconfirm --status
   ... --apply --mode cancel                     # 演练档（默认）：点【取消】，一笔单都不报
   ... --apply --mode send --account 资金账号     # 生产档
@@ -76,10 +57,10 @@ from pathlib import Path
 
 from cn_broker_api.drivers.tdxquant.health import tdx_install_root
 
-#: 客户端安装目录。⭐ **不在这里第二次写死机器路径**：2026-08-21 客户端目录改了个名
+#: 客户端安装目录。 **不在这里第二次写死机器路径**：2026-08-21 客户端目录改了个名
 #: （去掉中文），当时这份副本和后端那份各要改一次——漏掉这一份的表现是"自检说没打补丁"
 #: 这种假警报。现在唯一的出处是 `health.tdx_install_root()`（由入口按配置注入一次）。
-#: ⚠️ 路径**必须惰性求值**：import 期取值的话，配置还没注入就先炸了，而本模块在
+#: 路径**必须惰性求值**：import 期取值的话，配置还没注入就先炸了，而本模块在
 #: 「没配安装目录」时应当只在真去改文件那一刻失败。
 
 
@@ -164,7 +145,7 @@ INJECT = MARK_BEGIN + """
   }
 
   function badge() {
-    // ⚠️ 徽标必须挂在 body 上做固定层，**不能动页面自己的元素**：第一版给 .footer 设了
+    //  徽标必须挂在 body 上做固定层，**不能动页面自己的元素**：第一版给 .footer 设了
     // position:relative 再往里塞 div，跟它自己的 CSS 打架，页脚跑到顶上、表头整行消失
     // （2026-08-20 演练时实测）。观测件不许改被观测对象的布局。
     var el = document.getElementById("tq-autosend-badge");
@@ -212,42 +193,42 @@ def strip_patch(html: str) -> str:
 
 def cmd_status() -> int:
     if not page_path().exists():
-        print(f"✗ 找不到页面 {page_path()}")
+        print(f"[!] 找不到页面 {page_path()}")
         return 1
     html = read(page_path())
     on = MARK_BEGIN in html
     print(f"页面   {page_path()}")
-    print(f"       补丁 {'✅ 在' if on else '✗ 不在'}，"
+    print(f"       补丁 {'[ok] 在' if on else '[!] 不在'}，"
           f"sha1={hashlib.sha1(html.encode('utf-8')).hexdigest()[:12]}，"
           f"{len(html)} 字节")
-    print(f"备份   {backup_path()}  {'✅' if backup_path().exists() else '✗ 无'}")
+    print(f"备份   {backup_path()}  {'[ok]' if backup_path().exists() else '[!] 无'}")
     if sidecar_path().exists():
         txt = read(sidecar_path())
         m = re.search(r"window\.__TQ_AUTOSEND\s*=\s*(\{.*?\});", txt, re.S)
         cfg = json.loads(m.group(1)) if m else {}
         print(f"配置   {sidecar_path()}\n       {json.dumps(cfg, ensure_ascii=False)}")
         eff = on and bool(cfg.get("enabled"))
-        print(f"\n生效状态：{'✅ 开（' + str(cfg.get('mode')) + ' 档）' if eff else '关'}")
+        print(f"\n生效状态：{'[ok] 开（' + str(cfg.get('mode')) + ' 档）' if eff else '关'}")
     else:
-        print(f"配置   {sidecar_path()}  ✗ 无 ⇒ 即使补丁在，也是关的（fail closed）")
+        print(f"配置   {sidecar_path()}  [!] 无 ⇒ 即使补丁在，也是关的（fail closed）")
         print("\n生效状态：关")
     return 0
 
 
 def cmd_apply(args) -> int:
     if not page_path().exists():
-        print(f"✗ 找不到页面 {page_path()}")
+        print(f"[!] 找不到页面 {page_path()}")
         return 1
     html = read(page_path())
     if not backup_path().exists():
         if MARK_BEGIN in html:
-            print("✗ 页面已带补丁但没有备份，拒绝继续（先手工确认原文）")
+            print("[!] 页面已带补丁但没有备份，拒绝继续（先手工确认原文）")
             return 2
         write(backup_path(), html)
         print(f"已备份原文 → {backup_path()}")
     clean = strip_patch(html)
     if clean.count("</body>") != 1:
-        print(f"✗ </body> 出现 {clean.count('</body>')} 次，拒绝改")
+        print(f"[!] </body> 出现 {clean.count('</body>')} 次，拒绝改")
         return 2
     out = clean.replace("</body>", INJECT + "</body>")
     assert out.count(MARK_BEGIN) == 1, "补丁块必须恰好一份"
@@ -264,13 +245,13 @@ def cmd_apply(args) -> int:
         "pollMs": 2000,
     }
     write(sidecar_path(), sidecar_js(cfg))
-    print(f"✅ 补丁已装：{page_path()}")
-    print(f"✅ 配置已写：{sidecar_path()}")
+    print(f"[ok] 补丁已装：{page_path()}")
+    print(f"[ok] 配置已写：{sidecar_path()}")
     print(f"   {json.dumps(cfg, ensure_ascii=False)}")
     if args.mode == "cancel":
-        print("\n⚠️ 现在是**演练档**：命中规则会点【取消】，不会报单。验完记得改成 --mode send")
+        print("\n[!] 现在是演练档：命中规则会点【取消】，不会报单。验完记得改成 --mode send")
     if args.anytime:
-        print("⚠️ 交易时段闸被放开成全天（只该在演练时用）")
+        print("[!] 交易时段闸被放开成全天（只该在演练时用）")
     print("\n下一步：让「交易信号」窗口重新弹一次（发一笔委托），页脚出现徽标即为加载成功。")
     return 0
 
@@ -281,25 +262,25 @@ def cmd_remove() -> int:
         html = read(page_path())
         if MARK_BEGIN in html:
             write(page_path(), strip_patch(html))
-            print(f"✅ 补丁已从 {page_path()} 移除")
+            print(f"[ok] 补丁已从 {page_path()} 移除")
         else:
             print("页面本来就没有补丁")
         if backup_path().exists():
             a, b = read(page_path()), read(backup_path())
-            print("与备份逐字节一致 ✅" if a == b else "⚠️ 与备份不一致（客户端可能升级过页面）")
+            print("与备份逐字节一致" if a == b else "[!] 与备份不一致（客户端可能升级过页面）")
     else:
-        print(f"✗ 找不到 {page_path()}")
+        print(f"[!] 找不到 {page_path()}")
         rc = 1
     if sidecar_path().exists():
         sidecar_path().unlink()
-        print(f"✅ 配置已删 {sidecar_path()}")
+        print(f"[ok] 配置已删 {sidecar_path()}")
     return rc
 
 
 def _load_tdx_home() -> bool:
     """独立跑这个命令时，客户端安装目录得自己从配置读一次。
 
-    ⭐ 读的是**服务用的那一份配置**（`CN_BROKER_API_CONFIG` / 默认位置），不是再开一个参数：
+     读的是**服务用的那一份配置**（`CN_BROKER_API_CONFIG` / 默认位置），不是再开一个参数：
     多一个 `--tdx-home` 就等于多一处可以和配置分叉的地方，而分叉的表现是"自检说没打补丁"
     这种假警报（2026-08-21 客户端目录改名时踩过一次，当时两份副本各要改一次）。
     """
@@ -328,14 +309,19 @@ def main() -> int:
     g.add_argument("--remove", action="store_true", help="卸掉补丁并删配置")
     ap.add_argument("--mode", choices=("send", "cancel"), default="cancel",
                     help="send=生产（点发送）/ cancel=演练（点取消，不报单）。默认演练")
-    # 🔴 **不给默认值**：这里原先写着一个真实资金账号（母项目里是自用脚本，无所谓；
-    # 本仓库要公开，就成了泄露）。空串＝不限账号，与配置里 `account` 缺省的语义一致。
+    # 不给默认值：原先写着一个真实资金账号，本仓库要公开就成了泄露。空串＝不限账号。
     ap.add_argument("--account", default="", help="只对这个资金账号的信号动手（空＝不限）")
     ap.add_argument("--max-age", type=int, default=90, help="行龄上限（秒）")
     ap.add_argument("--max-vol", type=int, default=100000, help="单笔股数上限")
     ap.add_argument("--max-notional", type=float, default=150000.0, help="单笔金额上限")
     ap.add_argument("--anytime", action="store_true",
                     help="放开交易时段闸（只给演练用，生产别加）")
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            # 本机控制台是 GBK，符号会崩在 print 那一行（服务入口做的是同一件事）
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
     args = ap.parse_args()
     if not _load_tdx_home():
         return 2

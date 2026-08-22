@@ -34,6 +34,40 @@ def test_no_token_is_401(client):
     assert client.get("/v1/meta").status_code == 401
 
 
+def test_empty_server_token_refuses_everything(tmp_path):
+    """服务端自己没有 token 时一律 503，**不是放行**。
+
+    `secrets.compare_digest("", "")` 为真 ⇒ 少了这道闸，一个 token 为空的 app 会把
+    「Authorization: Bearer 」当作通过，整个接口彻底没有鉴权。正常路径构造不出这种 app
+    （`load_or_create_token` 生成不出空串），但这是"一旦发生就完全没有鉴权"的分支。
+    """
+    from flask import Flask
+
+    from cn_broker_api.api import auth as auth_mod
+    from cn_broker_api.api.context import ApiContext
+    from cn_broker_api.serial_queue import AccountSerialQueue
+    from cn_broker_api.singleflight import SingleFlight
+    from cn_broker_api.state import HealthCache, LastRun
+
+    cfg = Config(server=ServerConfig(port=17710, state_dir=tmp_path),
+                 health=HealthConfig(cache_seconds=30),
+                 tdxquant=TdxQuantConfig(), driver="paper")
+    app = Flask(__name__)
+    auth_mod.register(app, ApiContext(
+        cfg=cfg, driver=PaperDriver(), cache=HealthCache(ttl_seconds=30),
+        last_run=LastRun(state_dir=tmp_path), flight=SingleFlight(),
+        queue=AccountSerialQueue(), token="", repo_root=tmp_path))
+
+    @app.get("/v1/meta")
+    def _meta():  # noqa: ANN202
+        return {"reached": True}
+
+    c = app.test_client()
+    assert c.get("/v1/meta").status_code == 503
+    assert c.get("/v1/meta", headers={"Authorization": "Bearer "}).status_code == 503
+    assert c.get("/v1/meta", headers=AUTH).status_code == 503
+
+
 def test_wrong_token_is_401(client):
     assert client.get("/v1/meta", headers={"Authorization": "Bearer nope"}).status_code == 401
 

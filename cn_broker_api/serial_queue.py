@@ -64,8 +64,8 @@ class AccountSerialQueue:
                 raise task.error
             return task.value
         with self._cv:
-            # 还没开跑就作废，别在调用方已经放弃之后再发出去——一笔没人知道的委托
-            # 比一次明确的超时糟得多。已经开跑的拦不住，只能记红。
+            # 还没开跑就作废，别在调用方放弃之后再发出去——一笔没人知道的委托比一次明确的
+            # 超时糟得多。已经开跑的拦不住，只能记红。
             task.abandoned = not task.started
             still_running = task.started
         if still_running:

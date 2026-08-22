@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 class WatchdogState:
     """今天各进程拉起过几次 + 上一次醒来做了什么。
 
-    ⭐ 次数落盘：放内存的话「重启三次 ＝ 又拉了三次」，而它防的是"起来就自己退"的死循环。
-    ⭐ 上次心跳也落盘：不留痕的看门狗和没在跑的看门狗，在诊断页上长得一模一样。
+     次数落盘：放内存的话「重启三次 ＝ 又拉了三次」，而它防的是"起来就自己退"的死循环。
+     上次心跳也落盘：不留痕的看门狗和没在跑的看门狗，在诊断页上长得一模一样。
     """
 
     state_dir: Path
@@ -41,9 +41,8 @@ class WatchdogState:
         try:
             return json.loads(self._path.read_text(encoding="utf-8")) or {}
         except (OSError, ValueError) as e:
-            # 🔴 与日闩同一个取向：读不出来当成「已经用完」，不是「还没用过」。
-            #    坏文件的两种解释里，保守那边的代价是要人自己起一次客户端；
-            #    乐观那边的代价是可能进入无限重启。
+            # 同日闩：读不出来当成「已经用完」——保守那边的代价是人自己起一次客户端，
+            # 乐观那边的代价是无限重启。
             logger.error("[watchdog] %s 读不出来（%s）⇒ 按次数已用完处置",
                          self._path, str(e)[:120])
             return {"__unreadable__": True}

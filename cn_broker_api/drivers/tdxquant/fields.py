@@ -30,7 +30,7 @@ def s(d: Dict[str, Any], *keys: str, default: str = "") -> str:
 def is_pending_confirm(res: Any) -> bool:
     """这次下单回执是不是「已推给客户端、等人确认」。
 
-    ⚠️ **两个判据都要**：`Value` 在部分版本上是字符串、也可能整个字段缺失，
+     **两个判据都要**：`Value` 在部分版本上是字符串、也可能整个字段缺失，
     那时只剩 `Msg` 认得出。
     """
     if not isinstance(res, dict):

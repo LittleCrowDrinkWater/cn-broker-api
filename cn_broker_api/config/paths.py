@@ -1,8 +1,8 @@
 """配置文件去哪儿找：环境变量 `CN_BROKER_API_CONFIG` > `<仓库>/config.toml` >
 `<仓库上一级>/cn-broker-api.toml`（旧位置，只为兼容）。
 
-⚠️ 默认位置在仓库目录里、靠 `.gitignore` 挡着 ⇒ 别在这个仓库跑 `git clean -xdf`。
-⭐ 一份都找不到不是错：全套默认值起得来，只是 `tdx_home` 缺了会在第一次真调用时失败。
+ 默认位置在仓库目录里、靠 `.gitignore` 挡着 ⇒ 别在这个仓库跑 `git clean -xdf`。
+ 一份都找不到不是错：全套默认值起得来，只是 `tdx_home` 缺了会在第一次真调用时失败。
 """
 from __future__ import annotations
 

@@ -28,7 +28,7 @@ def register(app: Flask, ctx: ApiContext) -> None:
 
     @app.get("/v1/state")
     def state():  # noqa: ANN202
-        """诊断页要的那几样。🔴 **绝不含密码**——只报"哪些账户手上有密码"。"""
+        """诊断页要的那几样。 **绝不含密码**——只报"哪些账户手上有密码"。"""
         account = (request.args.get("account") or "").strip()
         vault = getattr(driver, "vault", None)
         latch = getattr(driver, "latch", None)
@@ -47,7 +47,7 @@ def register(app: Flask, ctx: ApiContext) -> None:
         )
 
     def _watchdog_state() -> Dict[str, Any]:
-        """看门狗那一块。⭐ **没开也要报**，而且要报"没开"这三个字：
+        """看门狗那一块。 **没开也要报**，而且要报"没开"这三个字：
         一个没在跑的看门狗和一个在跑但什么都没做的看门狗，在页面上不能长得一样。
         """
         out: Dict[str, Any] = {"enabled": cfg.watchdog.enabled,

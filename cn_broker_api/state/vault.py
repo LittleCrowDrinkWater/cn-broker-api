@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional
 class PasswordVault:
     """`cred_source = "request"` 时的密码存放处：**只在内存，绝不落盘**。
 
-    ⭐ 按 (账户, 日期) 存：跨天自动失效，不需要额外的清理逻辑，也不会让昨天下发的密码
+     按 (账户, 日期) 存：跨天自动失效，不需要额外的清理逻辑，也不会让昨天下发的密码
     在今天被悄悄复用。
     """
 

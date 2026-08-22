@@ -1,6 +1,6 @@
 """把客户端弄到「交易通道可用」，以及查那一趟的进度。
 
-⭐ 是 `ensure`（把它弄好，已经好了就什么都不做）而不是 `login`（去执行一次登录动作）：
+ 是 `ensure`（把它弄好，已经好了就什么都不做）而不是 `login`（去执行一次登录动作）：
 状态驱动而非弹框驱动，所以定时任务可以放心反复打。
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ def register(app: Flask, ctx: ApiContext) -> None:
             flight.finish(job_id, payload)
             return jsonify(job_id=job_id, state="done", **payload), (200 if res.ok else 503)
         except SubmitBlocked as e:
-            # 🔴 **不是错误，是闸门生效了** ⇒ 409 而不是 5xx，且文案要能直接给人看。
+            # **不是错误，是闸门生效了** ⇒ 409 而不是 5xx，且文案要能直接给人看。
             flight.finish(job_id, {"ok": False, "blocked": True, "detail": str(e)})
             return jsonify(job_id=job_id, state="done", ok=False, blocked=True,
                            error="submit_blocked", message=str(e)), 409

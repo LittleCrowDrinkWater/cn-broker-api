@@ -30,9 +30,12 @@ def register(app: Flask, ctx: ApiContext) -> None:
         if request.path == "/" or request.path.startswith("/static/"):
             return None                      # 诊断页是静态的、不含数据，不鉴权
         if request.path == "/favicon.ico":
-            # 浏览器自己会去要它。让它撞鉴权的话，console 里每次都多一条 401——
-            # 而那条噪音会把真正该看见的报错淹掉。
+            # 浏览器自己会去要它；撞鉴权的话 console 里的 401 噪音会淹掉真报错。
             return ("", 204)
+        if not tok:
+            # 没有 token 时 compare_digest("", "") 会放行整个接口 ⇒ fail closed。
+            return jsonify(error="misconfigured",
+                           message="服务端没有 token，一律拒绝"), 503
         got = (request.headers.get("Authorization") or "").strip()
         if not got.startswith("Bearer ") or not secrets.compare_digest(got[7:], tok):
             return jsonify(error="unauthorized",
