@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from cn_broker_api.stdio import init_stdio
+
 logger = logging.getLogger(__name__)
 
 _WIN = sys.platform == "win32"
@@ -50,8 +52,11 @@ def _say(msg: str) -> None:
 
 #: **stdout 与 stderr 都要归一**：后端 logger 写的是 stderr，只归一 stdout 的话
 #: 真跑那次的日志全是乱码——而这脚本存在的意义就是出问题时给人看诊断信息。
-sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+#: 🔴 必须走带保护的 `init_stdio()`，不能裸调 `.reconfigure`：计划任务跑的是 `pythonw.exe`，
+#: 它没有控制台 ⇒ `sys.stdout` 是 `None`，裸调在 **import 期**就抛 AttributeError；
+#: 而那时 stderr 也是 None、traceback 无处可写 ⇒ 服务静默退出 1、日志里一个字都没有
+#: （2026-08-22 装计划任务时踩到，在那之前它只在有控制台的地方跑过）。
+init_stdio()
 #: **刻意不声明 DPI 感知**：客户端是 DPI 不感知进程。保持不感知 ⇒ `GetWindowRect`、
 #: `PrintWindow` 给的位图、我们 Post 出去的客户区坐标全在同一套（虚拟化后的）坐标里。
 #: 上次声明了感知去点 CEF 页面，四种点击方式"全失败"，差点误判成"Chromium 不接受合成输入"。

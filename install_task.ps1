@@ -86,12 +86,15 @@ if ($ConfigPath -ne '') {
 # 🔴 pythonw 没有控制台，配置读不出来那行 stderr 会被丢掉，能看见的只有计划任务
 #    「上次运行结果 = 2」。所以在这里先用带控制台的解释器把配置读一遍，
 #    让错误现在就以人话的形式出现，而不是等到某天早上服务不在。
+# ⭐ 走 `-m cn_broker_api.config` 而不是 `python -c "..."`：后者要在这里嵌一串带引号的
+#    Python 源码，引号会被 PowerShell 的原生参数解析吃掉，报出来是 `SyntaxError`——
+#    看着像配置坏了。这个脚本从写出来到 2026-08-22 一次都没跑通过，就是栽在这上面。
 $checker = Join-Path (Split-Path -Parent $exe) 'python.exe'
 if (Test-Path -LiteralPath $checker) {
     Write-Step '先把配置读一遍'
     Push-Location $RepoRoot
     try {
-        & $checker -c 'from cn_broker_api.config import load; c = load(); print("  配置    ", c.source_path or "(没有配置文件，全套默认值)"); print("  驱动    ", c.driver, " 端口", c.server.port); print("  状态目录", c.server.state_dir)'
+        & $checker -m cn_broker_api.config
         if ($LASTEXITCODE -ne 0) { throw "配置读不过（退出码 $LASTEXITCODE），先把配置改对再装任务" }
     } finally {
         Pop-Location

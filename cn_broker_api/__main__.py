@@ -11,16 +11,10 @@ import logging
 import sys
 from pathlib import Path
 
+from cn_broker_api.stdio import init_stdio
+
 #: 只绑回环，且**刻意不从配置读**（见模块 docstring）。
 BIND_HOST = "127.0.0.1"
-
-
-def _init_stdio() -> None:
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass          # 被重定向到不支持 reconfigure 的对象时不该因此起不来
 
 
 def _init_logging(state_dir: Path) -> None:
@@ -69,7 +63,7 @@ def _log_config(log, cfg) -> None:  # noqa: ANN001
 
 
 def main() -> int:
-    _init_stdio()
+    init_stdio()
     from cn_broker_api.config import CONTRACT_VERSION, ConfigError, load
 
     try:

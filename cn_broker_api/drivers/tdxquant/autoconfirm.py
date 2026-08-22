@@ -56,6 +56,7 @@ import sys
 from pathlib import Path
 
 from cn_broker_api.drivers.tdxquant.health import tdx_install_root
+from cn_broker_api.stdio import init_stdio
 
 #: 客户端安装目录。 **不在这里第二次写死机器路径**：2026-08-21 客户端目录改了个名
 #: （去掉中文），当时这份副本和后端那份各要改一次——漏掉这一份的表现是"自检说没打补丁"
@@ -301,7 +302,7 @@ def _load_tdx_home() -> bool:
 
 
 def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    init_stdio()
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--status", action="store_true", help="看补丁与配置现在什么状态")
@@ -316,12 +317,6 @@ def main() -> int:
     ap.add_argument("--max-notional", type=float, default=150000.0, help="单笔金额上限")
     ap.add_argument("--anytime", action="store_true",
                     help="放开交易时段闸（只给演练用，生产别加）")
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            # 本机控制台是 GBK，符号会崩在 print 那一行（服务入口做的是同一件事）
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except (AttributeError, ValueError):
-            pass
     args = ap.parse_args()
     if not _load_tdx_home():
         return 2
