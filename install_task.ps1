@@ -109,9 +109,24 @@ $action = New-ScheduledTaskAction -Execute $exe -Argument '-m cn_broker_api' -Wo
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Me
 $trigger.Delay = 'PT30S'
 
+# 🔴 第二条触发：每分钟复查一次，永不结束。**「进程死了要自己回来」全靠这一条。**
+#
+# 两个都别指望：① settings 里的 RestartCount 管的是"任务启动失败"，不管"动作的进程没了"
+#   （2026-08-22 实测杀掉 pythonw，180 秒内没有任何重启动作，LastTaskResult = 0xFFFFFFFF）；
+# ② 把 Repetition 挂到上面那条 AtLogOn 上也不行——重复是跟着触发实例走的，而登录那一刻
+#   早就过去了，重复窗口根本没启动（同日实测，又是 190 秒没回来）。
+# ⇒ 必须是一条**独立的、起始时间在过去的定时触发**，它现在就是活的。
+#
+# 与 MultipleInstances = IgnoreNew 配套：还活着时这一次触发直接被忽略，零成本；死了才真起一个。
+# 间隔取 1 分钟而不是 5 分钟：盘中那几个报单时点之间只隔几分钟，5 分钟的洞能吞掉一个时点。
+$heartbeat = New-ScheduledTaskTrigger -Once -At (Get-Date).Date `
+             -RepetitionInterval (New-TimeSpan -Minutes 1)
+$heartbeat.Repetition.Duration = ''     # 空串＝无限期；给具体时长的话过了那段就不再重复
+
 # ExecutionTimeLimit = 0 ＝ 不限时长（它是常驻进程，默认那个 3 天上限会把它杀掉）。
-# MultipleInstances IgnoreNew ＝ 手动 schtasks /run 一次不会起出第二个来抢端口。
-# RestartCount ＝ 崩了自己回来；这台机器上没人盯着它。
+# MultipleInstances IgnoreNew ＝ 手动 schtasks /run、以及上面那条每分钟的重复触发，
+#   都不会起出第二个来抢端口。**进程活着的保证是"重复触发 + IgnoreNew"这一对**。
+# RestartCount 留着只覆盖"任务启动失败"那一类，它**不**覆盖"进程被杀/自己退了"（实测）。
 $settings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
     -ExecutionTimeLimit ([TimeSpan]::Zero) `
@@ -129,14 +144,14 @@ if ($null -ne $existing) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
 }
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
+Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger @($trigger, $heartbeat) `
     -Settings $settings -Principal $principal `
     -Description 'cn-broker-api：本机券商接入服务。必须跑在交互桌面会话里（要枚举窗口、抓位图）。' | Out-Null
 
 Write-Step "已注册 '$TaskName'"
 Write-Host "  可执行   $exe -m cn_broker_api"
 Write-Host "  工作目录 $RepoRoot"
-Write-Host "  触发     登录后 30 秒"
+Write-Host "  触发     登录后 30 秒；另有一条每分钟复查（已在跑就跳过，死了才拉起）"
 
 if ($Start) {
     Write-Step '现在跑一次'
