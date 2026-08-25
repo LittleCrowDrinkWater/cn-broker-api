@@ -228,6 +228,10 @@ def test_instrument_margin_target_may_be_null(client):
 
 # ---- 契约版本 ----
 
-def test_contract_is_two_now_that_trading_is_here(client):
-    """交易端点上线 ⇒ 版本必须动，否则调用方校版本这件事就白做了。"""
-    assert client.get("/v1/meta", headers=AUTH).get_json()["contract"] == 2
+def test_contract_says_three_since_orders_carry_a_time(client):
+    """字段一变版本就得动，否则调用方校版本这件事就白做了。
+
+    v2 ＝交易端点上线，v3 ＝委托行多了 `order_time`。这条用例的作用是**逼着改版本号**：
+    两侧靠这个整数硬校验，忘了升就会在调用方那侧凌晨三点静默读到一个恒为 null 的字段。
+    """
+    assert client.get("/v1/meta", headers=AUTH).get_json()["contract"] == 3

@@ -1,7 +1,7 @@
 """厂商 dict 的字段读取与状态判定。字段名全部实测过（2026-07-28 起）。"""
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from cn_broker_api.trade.wire import CANCELED, FILLED, LIVE, PARTIALLY_FILLED
 
@@ -57,3 +57,24 @@ def order_status(o: Dict[str, Any]) -> str:
 def order_side(o: Dict[str, Any]) -> str:
     """BSFlag 0 买 / 1 卖（-1 是已撤，方向此时不重要，按买回退）。"""
     return "sell" if int(o.get("BSFlag", 0)) == 1 else "buy"
+
+
+def order_time(o: Dict[str, Any]) -> Optional[str]:
+    """委托行 → 报单时刻 `HHMMSS`；认不出格式返回 `None`。
+
+    `Time` 是当日委托簿 11 个字段里唯一还带信息的一个（`Status`/`KPFlag`/`WTFS` 实测当天
+    全是常量）。调用方拿它把「几小时前那笔」从认领候选里排除掉——委托类型在查询侧不可见，
+    只按代码+委托量认领时，同一账户上另一条腿的同形委托会被认过来。
+
+    🔴 **只认 5 位或 6 位数字**：`93000` 是小时的前导零被吞掉（补成 `093000`），而 4 位的
+    `0923` 补零会变成 `000923`——把 09:23 读成 00:09，比没有这个字段更糟。分不清就给 `None`，
+    调用方那侧的规矩是「缺时刻不排除」，退回原来的行为。
+    """
+    raw = s(o, "Time").replace(":", "").strip()
+    if not raw.isdigit() or len(raw) not in (5, 6):
+        return None
+    hms = raw.zfill(6)
+    hh, mm, ss = int(hms[:2]), int(hms[2:4]), int(hms[4:])
+    if hh > 23 or mm > 59 or ss > 59:
+        return None
+    return hms

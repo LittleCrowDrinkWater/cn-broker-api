@@ -53,12 +53,21 @@ def cancel_result(*, outcome: str, reason: str,
 def order_row(*, order_id: Optional[str], symbol: str, side: str, status: str,
               size: Any, price: Any = None, filled_size: Any = 0,
               avg_fill_price: Any = 0, client_order_id: Optional[str] = None,
-              order_type: str = "limit") -> Dict[str, Any]:
+              order_type: str = "limit",
+              order_time: Optional[str] = None) -> Dict[str, Any]:
+    """一行委托。
+
+    `order_time` ＝券商记的报单时刻 `HHMMSS`，**不带日期**（当日委托簿本来就只有今天的行，
+    而拼日期要多一个假设：凌晨或非交易日查到的是哪一天）。给不出就是 `None`，调用方那侧的
+    规矩是**缺时刻不排除**——它只用来把明显早于本轮发单的委托挡在认领候选之外，
+    当判据用会把「这个驱动没有这个字段」变成「一笔都认不回来」。
+    """
     return {"order_id": (None if order_id is None else str(order_id)),
             "client_order_id": client_order_id, "symbol": symbol, "side": side,
             "order_type": order_type, "status": status,
             "size": num(size), "price": num(price),
-            "filled_size": num(filled_size), "avg_fill_price": num(avg_fill_price)}
+            "filled_size": num(filled_size), "avg_fill_price": num(avg_fill_price),
+            "order_time": order_time}
 
 
 def position_row(*, symbol: str, size: Any, avg_price: Any,

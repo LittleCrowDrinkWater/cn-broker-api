@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from cn_broker_api.drivers.driver_error import DriverError
 from cn_broker_api.drivers.tdxquant.client import TdxQuantClient, TdxQuantConnectionError
 from cn_broker_api.drivers.tdxquant.fields import (f, is_pending_confirm, order_side,
-                                                   order_status, s)
+                                                   order_status, order_time, s)
 from cn_broker_api.symbols import to_tq_code
 from cn_broker_api.trade.ack_unknown import AckUnknown
 from cn_broker_api.trade.credit_kind import CREDIT_KIND_SIDE, CreditOrderKind
@@ -226,7 +226,8 @@ class TdxQuantTrading:
         return order_row(order_id=str(o.get("Wtbh")), symbol=to_tq_code(code),
                          side=order_side(o), status=order_status(o),
                          size=f(o, "WtVol"), price=f(o, "WtPrice"),
-                         filled_size=f(o, "CjVol"), avg_fill_price=f(o, "CjPrice"))
+                         filled_size=f(o, "CjVol"), avg_fill_price=f(o, "CjPrice"),
+                         order_time=order_time(o))
 
     @_vendor_errors()
     def get_positions(self) -> List[Dict[str, Any]]:

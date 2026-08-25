@@ -237,6 +237,40 @@ def test_partially_filled_after_a_cancel():
     assert _trading(c).get_orders()[0]["status"] == "partially_filled"
 
 
+# ---- 报单时刻（契约 v3）----
+
+@pytest.mark.parametrize("raw, want", [
+    (93000, "093000"),          # 小时的前导零被吞掉，补回来
+    ("092300", "092300"),
+    ("09:23:00", "092300"),     # 带分隔符的写法也认
+    (145700, "145700"),
+])
+def test_order_time_comes_back_as_hhmmss(raw, want):
+    c = _FakeClient(orders=[[_order_row(Time=raw)]])
+    assert _trading(c).get_orders()[0]["order_time"] == want
+
+
+@pytest.mark.parametrize("raw, why", [
+    (None, "字段缺失"),
+    ("", "空值"),
+    ("0923", "4 位＝分不清是 09:23 还是 00:09:23，补零会读错"),
+    ("1234567", "位数超了"),
+    ("abcdef", "不是数字"),
+    ("257000", "25 点不存在"),
+    ("096100", "61 分不存在"),
+])
+def test_an_unrecognisable_time_is_none_not_a_guess(raw, why):
+    """🔴 认不出就给 `None`：调用方那侧「缺时刻不排除」，而猜错一个时刻会让它排除掉真的那笔。"""
+    row = _order_row() if raw is None else _order_row(Time=raw)
+    assert _trading(_FakeClient(orders=[[row]])).get_orders()[0]["order_time"] is None, why
+
+
+def test_the_order_ack_has_no_time_and_says_so():
+    """报单回执厂商只回 `Wtbh` ⇒ `order_time` 是 `None`（那条路径已有编号，本就不需要认领）。"""
+    row = _trading(_FakeClient()).create_order(symbol="000761", side="buy", size=100, price=4.8)
+    assert row["order_time"] is None
+
+
 def test_account_with_no_money_field_is_none():
     """实测有 `{"ErrorId": "0", "Value": []}` 这种形态，`if not a` 拦不住（dict 非空）。"""
     assert _trading(_FakeClient(asset={"ErrorId": "0", "Value": []})).get_account() is None

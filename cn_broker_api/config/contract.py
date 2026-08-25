@@ -8,4 +8,5 @@ from __future__ import annotations
 
 #: 契约版本。两侧必须一起升。
 #: v2 ＝交易与行情端点上线（v1 只有桌面监护与自检）。
-CONTRACT_VERSION = 2
+#: v3 ＝委托行多一个 `order_time`（报单时刻 HHMMSS，认领候选按它排除几小时前那笔）。
+CONTRACT_VERSION = 3
