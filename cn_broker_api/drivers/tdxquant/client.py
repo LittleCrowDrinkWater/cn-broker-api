@@ -103,13 +103,43 @@ _LOCK = threading.RLock()
 
 #: 进程级共享连接。`tq` 一进来就记下——**无论后面成不成**，`hard_reset()` 都得能真的断开；
 #: 旧实现把它记在实例上且只在全部成功后才赋值，于是失败那次的全局状态没人能清（见模块 docstring）。
-_SHARED: Dict[str, Any] = {"tq": None, "tqconst": None, "account_id": None, "key": None}
+_SHARED: Dict[str, Any] = {"tq": None, "tqconst": None, "account_id": None, "key": None,
+                           "client_fp": None}
 
 
 # 搬进本仓库时**删掉了这里的 `tdx_install_root()`**。它在母项目里是安装根目录的唯一
 #    出处，但本仓库里那个角色已经由 `health.tdx_install_root()` 担着（入口按配置注入一次，
 #    `autoconfirm` 与 `login` 都从它推）。留两份正好会犯它自己 docstring 里警告的那个错：
 #    两处各写一份，换客户端时改一处、另一处静默指向不存在的目录。
+
+
+def client_fingerprint() -> Optional[str]:
+    """通达信客户端进程的身份（`Tdxw.exe` 的 pid 集合）。**拿不到一律返回 `None`。**
+
+    用途是给 `connect()` 补一个探活发现不了的失效信号：客户端关掉重开之后句柄必然作废，
+    但 `_probe()` 只能在**调用失败时**才知道这件事，而它有个盲区——句柄还在、查询照样回
+    `ErrorId=0`，返回的却是连接建立那一刻的快照（2026-08-28 实盘：入金 10 万之后接口连读
+    15 分钟纹丝不动，见项目记忆 tdx-asset-snapshot-frozen）。进程换过就直接重连，不必等
+    探活替我们发现。
+
+    🔴 **`None` 是「没拿到答案」，不是「变了」**——非 Windows、枚举失败、客户端没在跑都归它，
+    调用方必须据此**跳过**这条判断退回原来的探活逻辑。把它当成「指纹变了」会在客户端正常
+    运行时反复重连；当成「没变」则等于这个函数不存在，两种误读都比不做更糟。
+
+    只认 `Tdxw.exe`（量化模块与 17709 端口都在它里面）；`TC.exe` 单独重启不影响句柄。
+    pid 可能被系统复用，此处不再取进程创建时间：复用要恰好撞上同一个数字**且**是同名进程，
+    而即便撞上也只是退回探活那条老路，不会比现在更差。
+    """
+    try:
+        from cn_broker_api.drivers.tdxquant.login import running_processes
+
+        pids = running_processes(("Tdxw.exe",))
+    except Exception as e:  # noqa: BLE001 — Windows 专属 + ctypes，失败一律降级成"不知道"
+        logger.debug("取客户端进程指纹失败（忽略，退回探活）: %s", str(e)[:120])
+        return None
+    if not pids:
+        return None                      # 没在跑 ⇒ 交给 connect 去报它自己那句话
+    return ",".join(str(x) for x in sorted(pids))
 
 
 def set_pyplugins(path: Optional[Path]) -> None:
@@ -344,10 +374,17 @@ class TdxQuantClient:
         `query_stock_asset`，健康时实测 0.01 秒。
         """
         with _LOCK:
+            fp = client_fingerprint()
             if _SHARED["account_id"] is not None and _SHARED["key"] == self._key:
-                if self._probe():
+                # 进程指纹先判：客户端换过就别再信手上的句柄，也别信探活（它有陈旧快照的盲区）。
+                # `fp is None` ＝ 没拿到指纹 ⇒ 这条判据整个跳过，走原来的探活。
+                was = _SHARED.get("client_fp")
+                if fp is not None and was is not None and fp != was:
+                    logger.warning("通达信客户端进程已换（%s → %s），强制重连", was, fp)
+                elif self._probe():
                     return
-                logger.warning("TdxQuant 共享连接已失效（探活失败），重连")
+                else:
+                    logger.warning("TdxQuant 共享连接已失效（探活失败），重连")
             self.hard_reset()                     # 有脏状态先真的断开，别让 initialize 空转
             # 两条通道都要 `prepare_import`：ctypes 为拿 `tq`，mcp 只为拿 `tqconst` 编号表。
             self.prepare_import()
@@ -388,6 +425,7 @@ class TdxQuantClient:
                     f"用 STOCK 去查信用账号，厂商报的是「资金账户未登录或不存在」。"
                     f"连接已自动重置，改对后直接再试一次即可，不需要重启后端")
             _SHARED["account_id"], _SHARED["key"] = acc, self._key
+            _SHARED["client_fp"] = fp
             logger.info("TdxQuant 已连接（通道 %s），账户句柄=%s", self._transport, acc)
 
     def _probe(self) -> bool:
@@ -539,4 +577,4 @@ class TdxQuantClient:
                     tq.close()
                 except Exception as e:  # noqa: BLE001
                     logger.warning("TdxQuant hard_reset 断开失败（已忽略）: %s", str(e)[:120])
-        _SHARED.update(account_id=None, tqconst=None, key=None)
+        _SHARED.update(account_id=None, tqconst=None, key=None, client_fp=None)
