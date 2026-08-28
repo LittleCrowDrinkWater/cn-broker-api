@@ -122,12 +122,35 @@ INJECT = MARK_BEGIN + """
   }
 
   var acted = 0, skipped = 0;
+
+  //  一笔一笔**错开**发，不在同一轮里连着调 `send()`。
+  //
+  // `send()` 不是普通的函数调用，它靠 `location.href = ".../sendautojy" + REQ_ID` 发起一次
+  // 导航来通知宿主。同步循环里连赋 N 次值，浏览器只处理最后一次、前面的全被取消 ⇒ 十笔
+  // 只有一两笔真到柜台，其余留在队列里等人点【全部发送】。页面自己的 `sendAll()` 就是
+  // 用 `setTimeout(..., e)`、`e += 100` 错开的，这里照搬它那个 100ms。
+  //
+  // 🔴 **不直接调 `sendAll()`**：它无差别发送所有 `STATE==="0"` 的行，五道闸一道都不过——
+  // 别的账户的信号、市价单、超额单，尤其是行龄超限的陈旧信号（队列形态里最危险的一格）。
+  // 借它的手法，不借它的语义。
+  var SEND_GAP_MS = 100;
+  function fire(row) {
+    // ⭐ 索引在 setTimeout 真正执行时**重新取**：`send()` 内部会 `remove(行, 索引)` 当场从
+    // list 里删掉这行，排在后面的全部前移，用入队时的旧索引会删错行（页面自己的 sendAll
+    // 就有这个毛病，只是 `send` 认的是 REQ_ID、删错的那行随后被 `load()` 兜回来）。
+    var v = app();
+    if (!v || !v.list) { return; }
+    var i = v.list.indexOf(row);
+    if (i < 0 || String(row.STATE) !== "0") { return; }   // 已被别处发掉/撤掉就不动它
+    if (MODE === "cancel") { v.cancel(row, i, 0); } else { v.send(row, i, 0); }
+  }
+
   function tick() {
     var v = app();
     if (!v || !v.list || !v.list.length) { return; }
     if (!inHours()) { return; }                       // 盘后一律不动手
-    var sent = done();
-    v.list.forEach(function (r, i) {
+    var sent = done(), delay = 1;
+    v.list.forEach(function (r) {
       if (String(r.STATE) !== "0") { return; }                       // 只碰未发送
       if (C.account && String(r.ZH) !== String(C.account)) { skipped++; return; }
       var age = nowSec() - (hms2sec(r.TIME) === null ? -1e9 : hms2sec(r.TIME));
@@ -139,9 +162,13 @@ INJECT = MARK_BEGIN + """
       if (C.maxNotional && vol * px > C.maxNotional) { skipped++; return; }
       var id = String(r.REQ_ID);
       if (sent.indexOf(id) >= 0) { return; }                          // 幂等：发过不再发
+      // ⭐ 幂等标记与计数写在**排期时**而不是发送时：下一轮 tick 在 100ms 之内就会再来一次，
+      // 这时排在后面的几笔还没轮到自己发，不记上就会被重复排期一遍。
       mark(id);
       acted++;
-      if (MODE === "cancel") { v.cancel(r, i, 0); } else { v.send(r, i, 0); }
+      sent.push(id);
+      setTimeout((function (row) { return function () { fire(row); }; })(r), delay);
+      delay += SEND_GAP_MS;
     });
   }
 
