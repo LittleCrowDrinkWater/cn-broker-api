@@ -39,7 +39,19 @@ r"""给通达信的「智赢交易信号」页面打自动确认补丁（装 / �
 | 落在 `hours` 里 | 盘后的探针单、误触 |
 | 限价 + 量/金额上限 | 我们只发限价单；出现市价单或超额就不是我们的 |
 
-发过的 `REQ_ID` 按日记进 `localStorage`，页面重载也不会重发同一笔。
+发过的 `REQ_ID` 按日记进 `localStorage`，页面重载也不会重发同一笔。**标记在调用
+`send()` 之后才写**：写在排期时的话，中间任何一步落空都成了「记了账没干活」，那一笔从此
+每轮被跳过、永久卡在队列里等人点（2026-09-01 一笔卖券还款就是这么漏的，融资负债差点过夜）。
+
+## 认行只认 `REQ_ID`
+
+页面的 `load()` 每 `pollMs` 把 `list` 整个换成**一批新对象**，所以任何跨过一次 `load` 的
+行引用都是废的——排期与真正发送之间隔着 100ms 的错开，必然跨得过去。`remove(t, e)` 则是
+按**索引**给 `list[e]` 打 `ACTED` 标记（不是删行，早先这里的注释写反了），索引错位会让
+另一行的按钮消失、那一笔人也点不了 ⇒ 行与索引必须是同一次查出来的。
+
+行龄闸一过，自动这侧就再也不碰那一笔了（这条闸不能为了重试放宽）。所以「该发而没发出去」
+的笔数直接从当前 `list` 算出来显示在页脚徽标上，**当场**看得见、还来得及手工点。
 
 用法（工作目录＝仓库根；客户端目录从配置的 `driver.tdxquant.tdx_home` 读）：
   .venv\Scripts\python -m cn_broker_api.drivers.tdxquant.autoconfirm --status
@@ -121,7 +133,7 @@ INJECT = MARK_BEGIN + """
     if (a.indexOf(id) < 0) { a.push(id); localStorage.setItem(KEY, JSON.stringify(a)); }
   }
 
-  var acted = 0, skipped = 0;
+  var acted = 0, missed = 0, pending = {};
 
   //  一笔一笔**错开**发，不在同一轮里连着调 `send()`。
   //
@@ -134,42 +146,66 @@ INJECT = MARK_BEGIN + """
   // 别的账户的信号、市价单、超额单，尤其是行龄超限的陈旧信号（队列形态里最危险的一格）。
   // 借它的手法，不借它的语义。
   var SEND_GAP_MS = 100;
-  function fire(row) {
-    // ⭐ 索引在 setTimeout 真正执行时**重新取**：`send()` 内部会 `remove(行, 索引)` 当场从
-    // list 里删掉这行，排在后面的全部前移，用入队时的旧索引会删错行（页面自己的 sendAll
-    // 就有这个毛病，只是 `send` 认的是 REQ_ID、删错的那行随后被 `load()` 兜回来）。
+
+  function rowIndexById(v, id) {
+    for (var i = 0; i < v.list.length; i++) {
+      if (String(v.list[i].REQ_ID) === id) { return i; }
+    }
+    return -1;
+  }
+
+  function fire(id) {
+    delete pending[id];
     var v = app();
     if (!v || !v.list) { return; }
-    var i = v.list.indexOf(row);
-    if (i < 0 || String(row.STATE) !== "0") { return; }   // 已被别处发掉/撤掉就不动它
+    // ⭐ 按 REQ_ID 重新认行，**不能认排期时抓到的那个对象**：页面的 `load()` 每 `pollMs`
+    // 把 list 整个换成一批新对象（源码是 `var o=[]; r.map(...o.push(新对象)); this.list=o`），
+    // 100ms 之后那个旧引用多半已经不在 list 里了。2026-09-01 漏掉一笔卖券还款就是这么来的：
+    // 一次 tick 排四笔跨 300ms，load 的回调落在中间，落在它之后的那笔 `indexOf` 返回 -1、
+    // 静默不发，而幂等标记当时写在排期处 ⇒ 后面每一轮都跳过它，融资负债差点过夜。
+    var i = rowIndexById(v, id);
+    if (i < 0) { return; }              // 这一轮认不到就不发；没记幂等，下一轮 tick 会重排
+    var row = v.list[i];
+    if (String(row.STATE) !== "0") { return; }            // 已被别处发掉/撤掉就不动它
+    // 索引与行必须是同一次查出来的：页面的 `remove(t, e)` 按索引给 `list[e]` 打 ACTED，
+    // 错位会让另一行的【发送】【取消】按钮消失，那一笔既发不出去、人也点不了。
     if (MODE === "cancel") { v.cancel(row, i, 0); } else { v.send(row, i, 0); }
+    // ⭐ 幂等标记写在**调用之后**。写在排期时的话，中间任何一步落空都成了「记了账没干活」，
+    // 且永不重试。放在这里的代价是同一笔可能被下一轮 tick 重排一次——不会变成重复报单：
+    // 真发出去的那笔柜台会把 STATE 改成 "1"，上面那行挡得住；而排期期间的空窗由 `pending`
+    // 挡（它只活在本页面会话里，重载后靠 localStorage 那份接着挡）。
+    mark(id);
+    acted++;
   }
 
   function tick() {
     var v = app();
     if (!v || !v.list || !v.list.length) { return; }
     if (!inHours()) { return; }                       // 盘后一律不动手
-    var sent = done(), delay = 1;
+    var sent = done(), delay = 1, stale = 0;
     v.list.forEach(function (r) {
       if (String(r.STATE) !== "0") { return; }                       // 只碰未发送
-      if (C.account && String(r.ZH) !== String(C.account)) { skipped++; return; }
-      var age = nowSec() - (hms2sec(r.TIME) === null ? -1e9 : hms2sec(r.TIME));
-      if (!(age >= 0 && age <= (C.maxAgeSec || 90))) { skipped++; return; }
+      if (C.account && String(r.ZH) !== String(C.account)) { return; }
       var vol = Number(r.VOL) || 0;
-      if (!vol || (C.maxVol && vol > C.maxVol)) { skipped++; return; }
+      if (!vol || (C.maxVol && vol > C.maxVol)) { return; }
       var px = Number(r.PRICE);                                       // 市价单这里是 NaN
-      if (!(px > 0)) { skipped++; return; }                           // 我们只发限价单
-      if (C.maxNotional && vol * px > C.maxNotional) { skipped++; return; }
+      if (!(px > 0)) { return; }                                      // 我们只发限价单
+      if (C.maxNotional && vol * px > C.maxNotional) { return; }
+      var t = hms2sec(r.TIME), age = t === null ? -1 : nowSec() - t;
+      if (age < 0) { return; }
+      if (age > (C.maxAgeSec || 90)) {
+        // 该发、没发出去、行龄闸又已经过了 ⇒ 自动这侧再也不会碰它（这条闸不能为了重试
+        // 放宽，早上的陈旧信号在下午被顺手发出去是队列形态里最危险的一格）。只能让人看见。
+        stale++;
+        return;
+      }
       var id = String(r.REQ_ID);
-      if (sent.indexOf(id) >= 0) { return; }                          // 幂等：发过不再发
-      // ⭐ 幂等标记与计数写在**排期时**而不是发送时：下一轮 tick 在 100ms 之内就会再来一次，
-      // 这时排在后面的几笔还没轮到自己发，不记上就会被重复排期一遍。
-      mark(id);
-      acted++;
-      sent.push(id);
-      setTimeout((function (row) { return function () { fire(row); }; })(r), delay);
+      if (sent.indexOf(id) >= 0 || pending[id]) { return; }           // 幂等：发过/排着不再排
+      pending[id] = true;
+      setTimeout((function (x) { return function () { fire(x); }; })(id), delay);
       delay += SEND_GAP_MS;
     });
+    missed = stale;   // 从 list 现状重算，不累加——计数器扛不住页面重载，这个读数扛得住
   }
 
   function badge() {
@@ -181,13 +217,17 @@ INJECT = MARK_BEGIN + """
       el = document.createElement("div");
       el.id = "tq-autosend-badge";
       el.style.cssText = "position:fixed;left:8px;bottom:1px;font-size:11px;"
-        + "z-index:9999;pointer-events:none;background:transparent;color:"
-        + (MODE === "cancel" ? "#e8a33d" : "#4bbf73");
+        + "z-index:9999;pointer-events:none;background:transparent;";
       document.body.appendChild(el);
     }
+    // 漏笔是这段代码唯一会静默造成损失的失败形态（2026-08-28、2026-09-01 各发生过一次，
+    // 两次都是事后翻 localStorage 才发现的）⇒ 它必须在**当场**看得见，还来得及手工点。
+    el.style.color = missed > 0 ? "#e05c5c"
+      : (MODE === "cancel" ? "#e8a33d" : "#4bbf73");
     el.textContent = "自动" + (MODE === "cancel" ? "取消(演练)" : "确认")
       + " 开 · " + (inHours() ? "交易时段" : "非交易时段只观察")
-      + " · 已处理" + acted;
+      + " · 已发" + acted
+      + (missed > 0 ? " · 漏 " + missed + " 笔，请手工点【发送】" : "");
   }
 
   var iv = C.pollMs || 2000;
