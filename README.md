@@ -83,6 +83,11 @@ OpenAPI 没有区别。客户端进程在不在、交易登没登、行情断没
 | `Tdxw.exe` | x64 | 主程序。**量化模块和本地 JSON-RPC 端口 17709 是它开的**——本服务的全部调用都打这里 |
 | `NewTc\TC.exe` | 32 位 | 交易模块。真正持有交易登录态、真正把委托送去柜台的是它 |
 
+完整客户端之外另有一个实验性的 headless 模式：由独立 64 位 Python 进程加载
+`TdxCopilot.dll` 与 `PYPlugins\TPyth.dll`，保留 `TC.exe`，不启动 `Tdxw.exe`。
+它只允许在带 `.trade-lab-marker` 的客户端副本中运行，并在发现任意 TDX/TC 进程时拒绝启动。
+准备方法、命令与当前验证边界见 [docs/tdx-headless-trade.md](docs/tdx-headless-trade.md)。
+
 **为什么非要整合版**：券商自己分发的安装包里，**量化模块与交易模块凑不齐**——装 32 位的
 那份有交易、没量化模块；装 64 位的那份有量化模块、没交易。只有整合版把两个装在一起，
 这个服务才有东西可对接。

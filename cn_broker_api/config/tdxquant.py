@@ -18,6 +18,9 @@ class TdxQuantConfig:
     #: **不自动回落**：两条通道的故障表现完全不同，自动回落会让"我以为走的是 A、其实
     #: 走的是 B"，而这是交易通道——同一个操作在两条路上可能一个成功一个失败。
     transport: str = "mcp"
+    #: 桌面进程模式：``full`` 需要 Tdxw.exe + TC.exe；``headless`` 的 MCP 端口由独立
+    #: headless 宿主提供，只管理 TC.exe，绝不拉起完整客户端。
+    desktop_mode: str = "full"
     #: 撤单之后最多等几秒去确认它真撤掉了（墙钟）。等不到不算撤成功。
     cancel_confirm_timeout: float = 5.0
     #: 撤单确认的重查间隔（秒）。

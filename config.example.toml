@@ -75,10 +75,17 @@ name = "tdxquant"
 # 默认：无（不给的话驱动在第一次真调用时明确失败）。
 tdx_home = "D:/YourBroker/TdxClient"
 
-# 客户端自己开的本地 JSON-RPC 地址。端口属主是客户端主程序本身
-# ⇒ **没客户端就没服务端**，这也是本服务不追求脱开客户端独立运行的原因。
-# 默认 http://127.0.0.1:17709。
+# 本地 JSON-RPC 地址。full 模式下端口属主是 Tdxw.exe；headless 模式下端口属主是
+# `python -m cn_broker_api.tdx_headless` 启动的独立宿主。
+# 默认 http://127.0.0.1:17709。实验副本应使用不同端口，例如 17711。
 mcp_url = "http://127.0.0.1:17709"
+
+# 桌面模式：
+#   full     ＝ 原来的 Tdxw.exe + TC.exe，broker API 可以按原配方拉起两者
+#   headless ＝ Tdxw.exe 不启动，量化 DLL 由独立 headless 宿主持有；broker API 只管理 TC.exe
+# headless 模式必须配合 transport = "mcp"，且 tdx_home 必须指向带 `.trade-lab-marker`
+# 的实验副本。默认 full；不要直接对日常交易安装目录做 headless 实验。
+desktop_mode = "full"
 
 # 交易密码从哪来：
 #   file    ＝ 本服务自己读下面那个 cred_file

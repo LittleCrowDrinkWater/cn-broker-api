@@ -39,6 +39,12 @@ TDX_RECIPE = DesktopRecipe(
     executables={"Tdxw.exe": "Tdxw.exe", "TC.exe": str(Path("NewTc") / "TC.exe")},
 )
 
+# headless 宿主取代 Tdxw.exe 持有量化与 RPC DLL；桌面侧只剩登录和柜台连接所在的 TC.exe。
+TDX_HEADLESS_RECIPE = DesktopRecipe(
+    processes=("TC.exe",),
+    executables={"TC.exe": str(Path("NewTc") / "TC.exe")},
+)
+
 
 class TdxQuantDriver:
     """真驱动。**Windows 专属**——非 Windows 上 import 得动，真去调才失败
@@ -48,9 +54,17 @@ class TdxQuantDriver:
 
     def __init__(self, cfg: TdxQuantConfig, *, latch: SubmitLatch,
                  vault: Optional[PasswordVault] = None) -> None:
+        if cfg.desktop_mode == "headless":
+            marker = cfg.tdx_home / ".trade-lab-marker" if cfg.tdx_home else None
+            if marker is None or not marker.is_file():
+                raise DriverError(
+                    "desktop_mode = headless 只能使用带 .trade-lab-marker 的实验副本"
+                )
         self.cfg = cfg
         self.latch = latch
         self.vault = vault or PasswordVault()
+        self._desktop_recipe = (TDX_HEADLESS_RECIPE
+                                if cfg.desktop_mode == "headless" else TDX_RECIPE)
         # 注入而不是让搬来的那两份各自读配置：两处各推一份的话换客户端时漏改一处，
         # 表现是自检把「文件不在」读成「补丁没打」。
         H.set_tdx_home(cfg.tdx_home)
@@ -93,7 +107,7 @@ class TdxQuantDriver:
 
     # ── 桌面进程（看门狗要的两件事）─────────────────────
     def desktop_recipe(self) -> DesktopRecipe:
-        return TDX_RECIPE
+        return self._desktop_recipe
 
     def desktop_processes(self) -> Dict[str, bool]:
         """配方里那几个进程各自在不在跑。**只读、零成本**，不连客户端、不抢锁。
@@ -101,14 +115,16 @@ class TdxQuantDriver:
          「进程在跑」离「能下单」还有三道门 ⇒ 这个结果不能当成通道可用。
         """
         running = {name.lower() for name in
-                   L.running_processes(TDX_RECIPE.processes).values()}
-        return {n: (n.lower() in running) for n in TDX_RECIPE.processes}
+                   L.running_processes(self._desktop_recipe.processes).values()}
+        return {n: (n.lower() in running) for n in self._desktop_recipe.processes}
 
     def start_desktop_process(self, name: str) -> None:
         """按配方拉起一个进程。**只拉起，绝不 kill**（见 `WatchdogConfig` 那段）。"""
-        rel = TDX_RECIPE.executables.get(name)
+        rel = self._desktop_recipe.executables.get(name)
         if not rel:
-            raise DriverError(f"配方里没有 {name!r}，认得的是 {sorted(TDX_RECIPE.executables)}")
+            raise DriverError(
+                f"配方里没有 {name!r}，认得的是 {sorted(self._desktop_recipe.executables)}"
+            )
         try:
             L._spawn(rel)
         except SystemExit as e:                # _spawn 找不到 exe 时 SystemExit(2)
@@ -121,7 +137,7 @@ class TdxQuantDriver:
          无人值守那一趟结束时才该收：人正看着它的时候动窗口很讨厌，
         所以 `ensure` 只在**真动手过**的那一趟收（见 `EnsureResult.acted`）。
         """
-        return L.minimize_client(L._target_pids(TDX_RECIPE.processes))
+        return L.minimize_client(L._target_pids(self._desktop_recipe.processes))
 
     def screenshot(self) -> "tuple[bytes, str]":
         """抓当时那个窗口的位图，返回 (PNG 字节, 说明)。
@@ -131,7 +147,7 @@ class TdxQuantDriver:
         """
         import io
 
-        pids = L._target_pids(TDX_RECIPE.processes)
+        pids = L._target_pids(self._desktop_recipe.processes)
         if not pids:
             raise DriverError("客户端进程一个都不在跑，没有窗口可抓")
         dlg = L.find_login_dialog(pids)
@@ -200,7 +216,8 @@ class TdxQuantDriver:
         self.latch.claim(acc)
         try:
             ok, detail = L.ensure_logged_in(
-                cred, wait=wait_seconds, start=start, minimize=minimize)
+                cred, wait=wait_seconds, start=start, minimize=minimize,
+                required_processes=self._desktop_recipe.processes)
         except SystemExit as e:        # login._spawn 找不到 exe 时会 SystemExit(2)
             # 刻意不结算：`claim()` 已按失败记过，这里让它留着——起不来客户端与密码错在这一层
             # 分不开，保守那边的代价小得多。

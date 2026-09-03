@@ -89,6 +89,12 @@ def load(path: Optional[Path] = None) -> Config:
     if transport not in ("mcp", "ctypes"):
         raise ConfigError(f"transport 只能是 mcp / ctypes，收到 {transport!r}")
 
+    desktop_mode = str(tq.get("desktop_mode") or "full").strip().lower()
+    if desktop_mode not in ("full", "headless"):
+        raise ConfigError(f"desktop_mode 只能是 full / headless，收到 {desktop_mode!r}")
+    if desktop_mode == "headless" and transport != "mcp":
+        raise ConfigError("desktop_mode = headless 时 transport 必须是 mcp")
+
     name = str((drv.get("name") if isinstance(drv, dict) else None) or "tdxquant").lower()
     if name not in ("tdxquant", "paper"):
         raise ConfigError(f"driver.name 只能是 tdxquant / paper，收到 {name!r}")
@@ -116,6 +122,7 @@ def load(path: Optional[Path] = None) -> Config:
             max_password_submits_per_day=int(tq.get("max_password_submits_per_day") or 10),
             max_consecutive_failures=int(tq.get("max_consecutive_failures") or 3),
             transport=transport,
+            desktop_mode=desktop_mode,
             cancel_confirm_timeout=float(tq.get("cancel_confirm_timeout") or 5.0),
             cancel_confirm_interval=float(tq.get("cancel_confirm_interval") or 1.0)),
         watchdog=watchdog,

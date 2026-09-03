@@ -562,7 +562,8 @@ def _do_trade_login(dlg: int, ctls: List[Ctl], cred: dict) -> bool:
 # ── 高层入口：状态驱动 ─────────────────────────────────
 
 def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
-                     guest: bool = False, minimize: bool = True) -> Tuple[bool, str]:
+                     guest: bool = False, minimize: bool = True,
+                     required_processes: Sequence[str] = PROCS) -> Tuple[bool, str]:
     """把"交易通道可用"这件事做成。返回 (成不成, 一句话)。
 
      **状态驱动，不是弹框驱动**：目标是"通道可用"，不是"把某个框填了"。客户端自己开了
@@ -578,20 +579,26 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
     """
     if not _WIN:
         return False, "只能在 Windows 上跑（客户端是 Windows 程序）"
-    pids = _target_pids()
+    required_processes = tuple(required_processes)
+    launchers = {"Tdxw.exe": start_client, "TC.exe": start_trade_module}
+    unknown = [name for name in required_processes if name not in launchers]
+    if unknown:
+        return False, f"没有启动配方：{unknown}"
+    pids = _target_pids(required_processes)
     if start:
-        for name, boot in (("Tdxw.exe", start_client), ("TC.exe", start_trade_module)):
+        for name in required_processes:
+            boot = launchers[name]
             if name in pids.values():
                 continue
             boot()
             t0 = time.time()
             while name not in pids.values() and time.time() - t0 < 90:
                 time.sleep(1.0)
-                pids = _target_pids()
+                pids = _target_pids(required_processes)
             if name not in pids.values():
                 return False, f"起了 {name} 但 90 秒内没见到这个进程"
     if not pids:
-        return False, f"没有 {' / '.join(PROCS)} 在跑（start=False 时不替你拉起来）"
+        return False, f"没有 {' / '.join(required_processes)} 在跑（start=False 时不替你拉起来）"
     _say(f"目标进程：{pids}")
 
     t_end = time.time() + wait
@@ -603,11 +610,11 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
             # 本来就登着就不动窗口（多半是人正在看它），只有这一趟真登过才收起来。
             if minimize and acted:
                 # 只在确认可用之后才最小化：失败时收窗口等于把唯一能看出哪里不对的东西藏起来。
-                got = minimize_client(_target_pids())
+                got = minimize_client(_target_pids(required_processes))
                 _say(f"已把客户端最小化（{got} 个窗口）——它照常连着")
             return True, detail
 
-        dlg = find_login_dialog(_target_pids())
+        dlg = find_login_dialog(_target_pids(required_processes))
         if dlg is not None:
             ctls = snapshot(dlg)
             kind = classify(ctls)
@@ -626,7 +633,7 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
                 return False, "认不出这是哪道门 ⇒ 中止"
 
         if time.time() > t_end:
-            missing = "TC.exe" not in _target_pids().values()
+            missing = "TC.exe" not in _target_pids(required_processes).values()
             return False, (f"{wait} 秒内既没登上、也没等到登录框。"
                            + ("交易模块（TC.exe）没在跑" if missing
                               else "交易模块在跑但不弹框"))

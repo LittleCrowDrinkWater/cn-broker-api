@@ -102,6 +102,14 @@ def test_an_unknown_cred_source_fails_loudly(tmp_path):
         load(p)
 
 
+def test_an_unknown_desktop_mode_fails_loudly(tmp_path):
+    p = tmp_path / "c.toml"
+    p.write_text(NL.join(["[driver.tdxquant]", 'desktop_mode = "tiny"']),
+                 encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load(p)
+
+
 def test_a_missing_config_file_still_starts(tmp_path):
     """缺文件不是错：全套默认值也起得来。"""
     cfg = load(tmp_path / "nope.toml")

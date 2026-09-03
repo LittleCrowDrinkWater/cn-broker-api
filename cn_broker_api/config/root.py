@@ -49,6 +49,7 @@ class Config:
             ("driver.tdxquant.tdx_home", str(self.tdxquant.tdx_home or "(未设)")),
             ("driver.tdxquant.mcp_url", self.tdxquant.mcp_url),
             ("driver.tdxquant.transport", self.tdxquant.transport),
+            ("driver.tdxquant.desktop_mode", self.tdxquant.desktop_mode),
             ("driver.tdxquant.cred_source", self.tdxquant.cred_source),
             ("driver.tdxquant.cred_file", str(self.tdxquant.cred_file or "(未设)")),
             ("driver.tdxquant.max_password_submits_per_day",
