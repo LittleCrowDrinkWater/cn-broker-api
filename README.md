@@ -86,7 +86,9 @@ OpenAPI 没有区别。客户端进程在不在、交易登没登、行情断没
 完整客户端之外另有一个实验性的 headless 模式：由独立 64 位 Python 进程加载
 `TdxCopilot.dll` 与 `PYPlugins\TPyth.dll`，保留 `TC.exe`，不启动 `Tdxw.exe`。
 它只允许在带 `.trade-lab-marker` 的客户端副本中运行，并在发现任意 TDX/TC 进程时拒绝启动。
-准备方法、命令与当前验证边界见 [docs/tdx-headless-trade.md](docs/tdx-headless-trade.md)。
+启动命令与当前验证边界见 [docs/tdx-headless-trade.md](docs/tdx-headless-trade.md)；
+最小运行目录的提取方法见
+[docs/tdx-headless-minimal-runtime.md](docs/tdx-headless-minimal-runtime.md)。
 
 **为什么非要整合版**：券商自己分发的安装包里，**量化模块与交易模块凑不齐**——装 32 位的
 那份有交易、没量化模块；装 64 位的那份有量化模块、没交易。只有整合版把两个装在一起，
