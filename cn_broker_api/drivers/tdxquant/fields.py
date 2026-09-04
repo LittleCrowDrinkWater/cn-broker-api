@@ -54,9 +54,21 @@ def order_status(o: Dict[str, Any]) -> str:
     return PARTIALLY_FILLED if cj > 0 else LIVE
 
 
-def order_side(o: Dict[str, Any]) -> str:
-    """BSFlag 0 买 / 1 卖（-1 是已撤，方向此时不重要，按买回退）。"""
-    return "sell" if int(o.get("BSFlag", 0)) == 1 else "buy"
+def order_side(o: Dict[str, Any]) -> Optional[str]:
+    """BSFlag 0 买 / 1 卖。**已撤单（-1）返回 `None`＝这一笔的方向柜台不给。**
+
+    🔴 撤单会把 `BSFlag` 抹成 -1，而当日委托簿另外 10 个字段里没有第二个能补出方向
+    （`Status`/`KPFlag`/`WTFS` 实测当天全是常量，见 `order_time`）⇒ **方向是真的丢了**。
+    这里曾经"按买回退"并注释成「方向此时不重要」，那句话对本模块成立、对调用方不成立：
+    2026-09-04 实盘上一笔已撤的**卖**单在前端显示成买入，人工补录还把 buy 抄进了委托台账。
+    ⚠️ 更坏的一格尚未发生：**撤单前已部分成交**时 `order_status` 判 `partially_filled`，
+    那是一条**带成交量**的行，方向猜错就是把减仓记成加仓。
+    ⇒ 给不出就说给不出，由调用方决定怎么显示、要不要让人指定（契约 v4）。
+    """
+    flag = int(o.get("BSFlag", 0))
+    if flag == -1:
+        return None
+    return "sell" if flag == 1 else "buy"
 
 
 def order_time(o: Dict[str, Any]) -> Optional[str]:

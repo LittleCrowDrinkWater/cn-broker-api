@@ -9,4 +9,6 @@ from __future__ import annotations
 #: 契约版本。两侧必须一起升。
 #: v2 ＝交易与行情端点上线（v1 只有桌面监护与自检）。
 #: v3 ＝委托行多一个 `order_time`（报单时刻 HHMMSS，认领候选按它排除几小时前那笔）。
-CONTRACT_VERSION = 3
+#: v4 ＝委托行的 `side` 可以是 `None`＝方向柜台不给（撤单会抹掉 BSFlag）。这一位必须升版本
+#:      而不是悄悄放宽：v3 的调用方拿 `None` 会按 `or "buy"` 折成买入，那正是要修的那个错。
+CONTRACT_VERSION = 4

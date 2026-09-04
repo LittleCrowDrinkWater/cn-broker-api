@@ -237,6 +237,24 @@ def test_partially_filled_after_a_cancel():
     assert _trading(c).get_orders()[0]["status"] == "partially_filled"
 
 
+# ---- 已撤单的方向（契约 v4）----
+
+def test_canceled_order_reports_no_side():
+    """撤单把 BSFlag 抹成 -1 ⇒ 方向**给不出**，不许折成买入。
+
+    2026-09-04 实盘：一笔已撤的卖单在前端显示成买入、还被人工补录进委托台账。
+    """
+    c = _FakeClient(orders=[[_order_row(BSFlag=-1)]])
+    assert _trading(c).get_orders()[0]["side"] is None
+
+
+@pytest.mark.parametrize("flag, want", [(0, "buy"), (1, "sell")])
+def test_live_order_still_reports_its_side(flag, want):
+    """没撤的单方向照常给——上一条不能顺手把正常路径也变成未知。"""
+    c = _FakeClient(orders=[[_order_row(BSFlag=flag)]])
+    assert _trading(c).get_orders()[0]["side"] == want
+
+
 # ---- 报单时刻（契约 v3）----
 
 @pytest.mark.parametrize("raw, want", [

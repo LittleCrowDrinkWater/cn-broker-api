@@ -50,7 +50,7 @@ def cancel_result(*, outcome: str, reason: str,
             "order": order, "reason": reason}
 
 
-def order_row(*, order_id: Optional[str], symbol: str, side: str, status: str,
+def order_row(*, order_id: Optional[str], symbol: str, side: Optional[str], status: str,
               size: Any, price: Any = None, filled_size: Any = 0,
               avg_fill_price: Any = 0, client_order_id: Optional[str] = None,
               order_type: str = "limit",
@@ -61,6 +61,10 @@ def order_row(*, order_id: Optional[str], symbol: str, side: str, status: str,
     而拼日期要多一个假设：凌晨或非交易日查到的是哪一天）。给不出就是 `None`，调用方那侧的
     规矩是**缺时刻不排除**——它只用来把明显早于本轮发单的委托挡在认领候选之外，
     当判据用会把「这个驱动没有这个字段」变成「一笔都认不回来」。
+
+    🔴 `side` 同样**可以是 `None`＝这一笔的方向柜台不给**（契约 v4 起，见
+    `drivers.tdxquant.fields.order_side`：撤单会把方向标志抹掉）。调用方不许把它折成买入
+    ——那正是 v3 的做法，实盘上把一笔已撤的卖单显示成了买入。
     """
     return {"order_id": (None if order_id is None else str(order_id)),
             "client_order_id": client_order_id, "symbol": symbol, "side": side,
