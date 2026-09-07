@@ -1,0 +1,3 @@
+# Optional offline capture analysis; not required by the trading service.
+pefile==2024.8.26
+pycryptodome==3.23.0
