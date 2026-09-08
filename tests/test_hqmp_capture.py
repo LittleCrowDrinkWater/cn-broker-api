@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from cn_broker_api.drivers.tdxquant.hqmp_capture import decode_body, extract_body, load_capture_key, summarize_capture
+from cn_broker_api.drivers.tdxquant.hqmp_capture import (
+    decode_body,
+    encode_body,
+    extract_body,
+    load_capture_key,
+    summarize_capture,
+)
 
 
 def test_decodes_little_endian_blocks_and_ascii_padding():
@@ -19,6 +25,13 @@ def test_decodes_little_endian_blocks_and_ascii_padding():
     assert decode_body(result, key) == json.loads(plain)
     with pytest.raises(ValueError):
         decode_body(result[:-1], key)
+
+
+def test_encode_body_round_trips_gb18030_json():
+    pytest.importorskip("Crypto.Cipher.Blowfish")
+    key = b"synthetic-test-key"
+    value = {"method": "Query", "params": {"name": "平安银行"}}
+    assert decode_body(encode_body(value, key), key) == value
 
 
 @pytest.mark.parametrize("length", [80, 336])

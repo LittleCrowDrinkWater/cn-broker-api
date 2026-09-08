@@ -47,6 +47,17 @@ def decode_body(body: bytes, key: bytes) -> dict:
     return result
 
 
+def encode_body(value: dict, key: bytes) -> bytes:
+    """按已观察到的 Blowfish 信封编码 HQMP JSON 对象。"""
+    from Crypto.Cipher import Blowfish
+
+    plain = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("gb18030")
+    padding = 8 - len(plain) % 8
+    plain += bytes([ord("0") + padding]) * padding
+    cipher = Blowfish.new(key, Blowfish.MODE_ECB)
+    return swap_words(cipher.encrypt(swap_words(plain)))
+
+
 def extract_body(frame: bytes) -> bytes | None:
     """仅识别已验证的两种调用封装，跳过心跳、注册和明文返回帧。"""
     payload = frame[20:]

@@ -1,79 +1,199 @@
-import ctypes
 import json
+import socket
+import threading
 
 import pytest
 
+from cn_broker_api.drivers.tdxquant.hqmp_capture import decode_body, encode_body, extract_body
 from cn_broker_api.drivers.tdxquant.hqmp_direct import (
     HqmpDirectSession,
-    _RpcString,
+    _encode_call,
+    _json_response,
+    _pack_length,
     _response_for,
     _selected_account,
 )
 from cn_broker_api.trade.credit_kind import CreditOrderKind
 
 
-class _FakeRpc:
-    def __init__(self, host):
-        self.host = host
-        self.calls = []
+def _call_frame(value, key, guid=b"A" * 36, request_id=0):
+    body = encode_body(value, key)
+    payload = b"\x93\x00\xd9\x30callfunction" + guid + _pack_length(len(body)) + body
+    return (
+        b"\x27\x01\x00\x00"
+        + len(payload).to_bytes(4, "little")
+        + request_id.to_bytes(4, "little")
+        + b"\0" * 8
+        + payload
+    )
 
-    def callRpcClientInterfaceByToken(self, interface, request_ptr, client_token_ptr):
-        request = ctypes.cast(request_ptr, ctypes.POINTER(_RpcString)).contents
-        client_token = ctypes.cast(client_token_ptr, ctypes.POINTER(_RpcString)).contents
-        body = json.loads(ctypes.string_at(request.data, request.length))
-        route = ctypes.string_at(client_token.data, client_token.length)
-        self.calls.append((interface, route, body))
-        response = {
-            "method": "ReturnValueComp",
-            "params": {
-                "functionname": body["method"],
-                "token": body["params"]["token"],
-                "value": [{"safe": "result"}],
-            },
-        }
-        self.host._handle_request(json.dumps(response).encode())
-        return True
+
+def _response_template():
+    payload = b'\x92\x00\xd9\x02{}\n'
+    return b"\x27\x00\x00\x00" + len(payload).to_bytes(4, "little") + b"\0" * 12 + payload
+
+
+def _rpc_frame(value, key, request_id):
+    body = encode_body(value, key)
+    payload = b"\x92\xabrpcfunction" + _pack_length(len(body)) + body
+    return (
+        b"\x27\x00\x00\x00"
+        + len(payload).to_bytes(4, "little")
+        + request_id.to_bytes(4, "little")
+        + b"\0" * 8
+        + payload
+    )
+
+
+def _recv_frame(connection):
+    header = b""
+    while len(header) < 20:
+        header += connection.recv(20 - len(header))
+    payload = b""
+    size = int.from_bytes(header[4:8], "little")
+    while len(payload) < size:
+        payload += connection.recv(size - len(payload))
+    return header + payload
 
 
 def test_responses_match_the_observed_callback_contract():
-    assert json.loads(_response_for("RegisterClient")) == {"resultType": "int", "result": 1}
-    assert json.loads(_response_for("GetInjectHwnd")) == {
+    assert _response_for("RegisterClient") == {"resultType": "int", "result": "1"}
+    assert _response_for("GetInjectHwnd") == {
         "resultType": "HWND",
         "result": "0000000000000000",
     }
-    assert json.loads(_response_for("NotifyMsgClient")) == {"resultType": "nullptr"}
-    assert json.loads(_response_for("RawExternSwitch")) == {"resultType": "long", "result": 0}
+    assert _response_for("NotifyMsgClient") == {"resultType": "nullptr"}
+    assert _response_for("RawExternSwitch") == {"resultType": "long", "result": "0"}
 
 
-def test_registers_client_and_correlates_a_read_only_callback(tmp_path):
-    host = HqmpDirectSession(tmp_path, 13575)
-    registration = {
-        "method": "RegisterClient",
-        "params": {"token": "private-route-token", "terminalId": ""},
+def test_encodes_a_call_with_the_live_connection_guid():
+    pytest.importorskip("Crypto.Cipher.Blowfish")
+    key = b"synthetic-test-key"
+    template = _call_frame({"method": "Old", "params": {}}, key, b"A" * 36)
+    value = {"method": "Query", "returnType": "", "params": {"token": "private"}}
+    frame = _encode_call(template, value, key, b"B" * 36)
+    assert b"B" * 36 in frame
+    assert b"A" * 36 not in frame
+    assert int.from_bytes(frame[4:8], "little") == len(frame) - 20
+    assert int.from_bytes(frame[8:12], "little") == 0
+    assert decode_body(extract_body(frame), key) == value
+
+
+def test_builds_plain_response_with_the_incoming_request_id():
+    frame = _json_response(
+        _response_template(), 37, {"resultType": "int", "result": "1"}
+    )
+    assert int.from_bytes(frame[8:12], "little") == 37
+    payload = frame[20:]
+    assert payload[:3] == b"\x92\x00\xd9"
+    length = payload[3]
+    assert json.loads(payload[4:4 + length]) == {"resultType": "int", "result": "1"}
+
+
+def test_correlates_return_value_using_the_special_account_token(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    host._client_token = "private-route-token"
+    sent = []
+
+    def send_call(method, params):
+        sent.append((method, params))
+        host._key = b"synthetic-test-key"
+        host._response_template = _response_template()
+        host._connection = type("Socket", (), {"sendall": lambda self, frame: None})()
+        callback = {
+            "method": "ReturnValueComp",
+            "params": {
+                "functionname": method,
+                "token": params["token"],
+                "value": [{"safe": "result"}],
+            },
+        }
+        payload = b"\x92\xabrpcfunction" + _pack_length(len(encode_body(callback, host._key)))
+        payload += encode_body(callback, host._key)
+        frame = b"\x27\x00\x00\x00" + len(payload).to_bytes(4, "little") + b"\0" * 12 + payload
+        host._handle_frame(frame)
+
+    monkeypatch.setattr(host, "_send_call", send_call)
+    assert host.call("OperateUser_0", {}) == [{"safe": "result"}]
+    assert sent == [("OperateUser_0", {"token": "private-route-token"})]
+
+
+def test_socket_session_closes_registration_call_and_callback_loop(tmp_path):
+    pytest.importorskip("Crypto.Cipher.Blowfish")
+    key = b"synthetic-test-key"
+    guid = b"B" * 36
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    host._key = key
+    host._response_template = _response_template()
+    host._templates = {
+        "DoLevinGN_927": _call_frame({"method": "Old", "params": {}}, key)
     }
-    assert json.loads(host._handle_request(json.dumps(registration).encode()))["result"] == 1
-    assert host._client_registered.is_set()
-    assert not host._client_ready.is_set()
-    ready = {"method": "NotifyMsgClient", "params": {"MsgType": "1"}}
-    host._handle_request(json.dumps(ready).encode())
-    assert host._client_ready.is_set()
-    host._rpc = _FakeRpc(host)
-    result = host.call("OperateUser_0", {})
-    assert result == [{"safe": "result"}]
-    interface, route, body = host._rpc.calls[0]
-    assert interface == b"callfunction"
-    assert route == b"private-route-token"
-    assert body["method"] == "OperateUser_0"
-    assert body["params"]["token"] == "private-route-token"
+    server_connection, client_connection = socket.socketpair()
+    client_connection.settimeout(2)
+    worker = threading.Thread(
+        target=host._serve_connection, args=(server_connection,), daemon=True
+    )
+    worker.start()
+    try:
+        guid_payload = b"\x92\xaccallfunction\xd9\x24" + guid
+        guid_frame = (
+            b"\x27\x01\x00\x00"
+            + len(guid_payload).to_bytes(4, "little")
+            + b"\0" * 12
+            + guid_payload
+        )
+        register = {
+            "method": "RegisterClient",
+            "params": {"token": "private-route-token", "terminalId": ""},
+        }
+        client_connection.sendall(guid_frame + _rpc_frame(register, key, 1))
+        assert int.from_bytes(_recv_frame(client_connection)[8:12], "little") == 1
+        ready = {"method": "NotifyMsgClient", "params": {"MsgType": "1"}}
+        client_connection.sendall(_rpc_frame(ready, key, 2))
+        assert int.from_bytes(_recv_frame(client_connection)[8:12], "little") == 2
+        host.wait_for_client(1)
+
+        result = []
+        call_worker = threading.Thread(
+            target=lambda: result.append(
+                host.call("DoLevinGN_927", {"mode": "1", "semauto": "1"}, 1)
+            ),
+            daemon=True,
+        )
+        call_worker.start()
+        request = _recv_frame(client_connection)
+        decoded = decode_body(extract_body(request), key)
+        assert decoded["method"] == "DoLevinGN_927"
+        assert decoded["params"] == {"mode": "1", "semauto": "1", "token": "927"}
+        assert guid in request
+        callback = {
+            "method": "ReturnValueComp",
+            "params": {"functionname": "DoLevinGN_927", "token": "927", "value": []},
+        }
+        client_connection.sendall(_rpc_frame(callback, key, 3))
+        assert int.from_bytes(_recv_frame(client_connection)[8:12], "little") == 3
+        call_worker.join(timeout=2)
+        assert not call_worker.is_alive()
+        assert result == [[]]
+    finally:
+        host._stop_event.set()
+        client_connection.close()
+        worker.join(timeout=2)
+        server_connection.close()
+
+
+def test_wait_for_client_can_accept_registered_reused_session(tmp_path):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    host._client_registered.set()
+
+    host.wait_for_client(0.01, require_ready=False)
 
 
 def test_trade_methods_require_the_explicit_gate(tmp_path):
-    host = HqmpDirectSession(tmp_path, 13575)
-    host._rpc = _FakeRpc(host)
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
     host._client_token = "route"
     with pytest.raises(ValueError, match="交易闸"):
         host.call("DoLevinGN_909", {"zqdm": "000001"})
-    assert host._rpc.calls == []
 
 
 def test_selects_the_current_account_without_exposing_its_values():
@@ -84,8 +204,8 @@ def test_selects_the_current_account_without_exposing_its_values():
         _selected_account([{"issel": "0"}, {"issel": "0"}])
 
 
-def test_probe_derives_query_parameters_from_the_selected_account(tmp_path, monkeypatch):
-    host = HqmpDirectSession(tmp_path, 13575)
+def test_probe_replays_bootstrap_with_a_dynamically_selected_account(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
     calls = []
 
     def call(method, params, timeout=20.0):
@@ -104,9 +224,15 @@ def test_probe_derives_query_parameters_from_the_selected_account(tmp_path, monk
     assert calls == [
         ("DoLevinGN_927", {"mode": "1", "semauto": "1"}, 3.0),
         ("OperateUser_0", {}, 3.0),
+        ("DoLevinGN_809", {"flag": "5", "setcode": "0", "qsid": "0", "zqdm": "", "zjzh": ""}, 3.0),
+        ("DoLevinGN_809", {"flag": "6", "setcode": "0", "qsid": "0", "zqdm": "", "zjzh": ""}, 3.0),
+        ("DoLevinGN_807", {}, 3.0),
+        ("DoLevinGN_822", {"setcode": "-1", "wtbh": "", "zqdm": ""}, 3.0),
+        ("DoLevinGN_822", {"setcode": "-1", "wtbh": "", "zqdm": ""}, 3.0),
+        ("DoLevinGN_920", {}, 3.0),
         ("DoLevinGN_803", {"qsid": "broker", "szID": "", "zjzh": "account", "zqdm": ""}, 3.0),
         ("DoLevinGN_830", {"qsid": "broker", "szID": "", "zjzh": "account"}, 3.0),
-        ("DoLevinGN_807", {}, 3.0),
+        ("DoLevinGN_822", {"setcode": "-1", "wtbh": "", "zqdm": ""}, 3.0),
     ]
 
 
@@ -121,7 +247,9 @@ def test_builds_the_observed_collateral_buy_contract(tmp_path, monkeypatch):
         "    PRICE_MY = 0\n",
         encoding="utf-8",
     )
-    host = HqmpDirectSession(tmp_path, 13575, enable_trade=True)
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
     calls = []
     monkeypatch.setattr(host, "_current_account", lambda timeout: {"userid": "private-user"})
 
@@ -162,7 +290,9 @@ def test_builds_the_observed_collateral_buy_contract(tmp_path, monkeypatch):
 
 
 def test_builds_the_observed_cancel_contract(tmp_path, monkeypatch):
-    host = HqmpDirectSession(tmp_path, 13575, enable_trade=True)
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
     calls = []
     monkeypatch.setattr(host, "_current_account", lambda timeout: {"zjzh": "private-account"})
 
@@ -176,17 +306,15 @@ def test_builds_the_observed_cancel_contract(tmp_path, monkeypatch):
         "message": "",
     }
     assert calls == [
-        (
-            "DoLevinGN_808",
-            {"wtbh": "private-order", "zjzh": "private-account"},
-            3.0,
-        )
+        ("DoLevinGN_808", {"wtbh": "private-order", "zjzh": "private-account"}, 3.0)
     ]
 
 
 @pytest.mark.parametrize("price", [0, -1, float("nan"), float("inf")])
 def test_rejects_invalid_prices_before_account_lookup(tmp_path, monkeypatch, price):
-    host = HqmpDirectSession(tmp_path, 13575, enable_trade=True)
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
     looked_up = False
 
     def current_account(timeout):

@@ -1,12 +1,13 @@
 """不启动 Tdxw，直接托管 TC 的 HQMP 会话。"""
 from __future__ import annotations
 
+import base64
 import ctypes
+from ctypes import wintypes
 import hashlib
 import json
 import math
-import os
-import struct
+import socket
 import subprocess
 import threading
 import time
@@ -15,86 +16,92 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from cn_broker_api.symbols import market_of, symbol_key
+from cn_broker_api.trade.ack_unknown import AckUnknown
+from cn_broker_api.trade.credit_kind import CREDIT_KIND_SIDE, CreditOrderKind
+from cn_broker_api.trade.order_rejected import OrderRejected
+
 from .headless import (
     LAB_MARKER,
     _running_trade_processes,
     _verify_lab_routing,
     _verify_ports_available,
 )
-from .hqmp_capture import SUPPORTED_DLL_SHA256
+from .hqmp_capture import (
+    SUPPORTED_DLL_SHA256,
+    decode_body,
+    encode_body,
+    extract_body,
+    load_capture_key,
+)
+from .tc_proxy import FrameBuffer
 from .tq_constants import TqConstants
-from cn_broker_api.symbols import market_of, symbol_key
-from cn_broker_api.trade.ack_unknown import AckUnknown
-from cn_broker_api.trade.credit_kind import CREDIT_KIND_SIDE, CreditOrderKind
-from cn_broker_api.trade.order_rejected import OrderRejected
 
 
 READ_ONLY_METHODS = frozenset({
     "DoLevinGN_927",
     "OperateUser_0",
-    "DoLevinGN_803",
+    "DoLevinGN_809",
     "DoLevinGN_807",
+    "DoLevinGN_822",
+    "DoLevinGN_920",
+    "DoLevinGN_803",
     "DoLevinGN_830",
 })
 TRADE_METHODS = frozenset({"DoLevinGN_909", "DoLevinGN_808"})
-
-
-class _RpcString(ctypes.Structure):
-    _fields_ = (
-        ("data", ctypes.c_void_p),
-        ("length", ctypes.c_int),
-        ("capacity", ctypes.c_int),
-    )
-
-
-_RpcCallback = ctypes.CFUNCTYPE(
-    None,
-    ctypes.POINTER(_RpcString),
-    ctypes.POINTER(_RpcString),
-)
 
 
 @dataclass
 class _PendingCall:
     event: threading.Event = field(default_factory=threading.Event)
     value: Any = None
+    error: Exception | None = None
 
 
 def require_direct_lab_root(root: Path) -> Path:
-    """只允许加载带实验标记、且二进制版本已核验的 64 位 DLL。"""
+    """只允许使用带实验标记、且协议版本已核验的客户端副本。"""
     root = root.resolve()
     dll_path = root / "tdxRpc64.dll"
     required = (root / LAB_MARKER, dll_path, root / "NewTc" / "TC.exe")
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise RuntimeError("实验副本缺少必要文件：" + ", ".join(missing))
-    if struct.calcsize("P") != 8:
-        raise RuntimeError("HQMP 直接宿主必须使用 64 位 Python")
     digest = hashlib.sha256(dll_path.read_bytes()).hexdigest()
     if digest != SUPPORTED_DLL_SHA256:
         raise RuntimeError("tdxRpc64.dll 版本未经核验，拒绝启动直接 HQMP 宿主")
     return root
 
 
-def _write_response(target: ctypes.POINTER(_RpcString), payload: bytes) -> None:
-    response = target.contents
-    if not response.data or response.capacity <= len(payload):
-        return
-    ctypes.memmove(response.data, payload, len(payload))
-    ctypes.memset(response.data + len(payload), 0, 1)
-    response.length = len(payload)
-
-
-def _response_for(method: str) -> bytes:
-    if method == "RegisterClient":
-        body: dict[str, Any] = {"resultType": "int", "result": 1}
-    elif method == "GetInjectHwnd":
-        body = {"resultType": "HWND", "result": "0000000000000000"}
-    elif method == "RawExternSwitch":
-        body = {"resultType": "long", "result": 0}
-    else:
-        body = {"resultType": "nullptr"}
-    return json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+def _process_image_path(process_id: int) -> Path | None:
+    """读取 Windows 进程镜像路径，用于确认复用的是实验副本 TC。"""
+    if not hasattr(ctypes, "windll"):
+        return None
+    kernel32 = ctypes.windll.kernel32
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_process.restype = wintypes.HANDLE
+    query_path = kernel32.QueryFullProcessImageNameW
+    query_path.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        wintypes.LPWSTR,
+        ctypes.POINTER(wintypes.DWORD),
+    )
+    query_path.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    handle = open_process(0x1000, False, process_id)
+    if not handle:
+        return None
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not query_path(handle, 0, buffer, ctypes.byref(size)):
+            return None
+        return Path(buffer.value).resolve()
+    finally:
+        close_handle(handle)
 
 
 def _selected_account(accounts: Any) -> dict[str, Any]:
@@ -109,68 +116,169 @@ def _selected_account(accounts: Any) -> dict[str, Any]:
     raise RuntimeError(f"无法唯一确定当前账户：账户数={len(rows)}，选中数={len(selected)}")
 
 
-class HqmpDirectSession:
-    """使用厂商 RPC DLL 接收 TC 注册，并直接调用查询、报单和撤单方法。"""
+def _pack_length(length: int) -> bytes:
+    if length < 0x100:
+        return b"\xd9" + length.to_bytes(1, "big")
+    if length < 0x10000:
+        return b"\xda" + length.to_bytes(2, "big")
+    return b"\xdb" + length.to_bytes(4, "big")
 
-    def __init__(self, root: Path, port: int, *, enable_trade: bool = False):
+
+def _extract_guid(frame: bytes) -> bytes | None:
+    payload = frame[20:]
+    marker = b"callfunction"
+    start = payload.find(marker)
+    if start < 0:
+        return None
+    start += len(marker)
+    if payload[start:start + 2] != b"\xd9\x24":
+        return None
+    guid = payload[start + 2:start + 38]
+    return guid if len(guid) == 36 else None
+
+
+def _replace_guid(frame: bytes, guid: bytes) -> bytes:
+    marker = b"callfunction"
+    start = frame.find(marker)
+    if start < 0:
+        raise ValueError("HQMP 调用模板缺少 callfunction")
+    start += len(marker)
+    if len(frame) < start + 36:
+        raise ValueError("HQMP 调用模板缺少 36 字节 GUID")
+    return frame[:start] + guid + frame[start + 36:]
+
+
+def _encode_call(template: bytes, obj: dict[str, Any], key: bytes, guid: bytes) -> bytes:
+    frame = _replace_guid(template, guid)
+    body = encode_body(obj, key)
+    payload = frame[20:72] + _pack_length(len(body)) + body
+    header = bytearray(frame[:20])
+    header[4:8] = len(payload).to_bytes(4, "little")
+    header[8:12] = b"\0" * 4
+    return bytes(header) + payload
+
+
+def _json_response(template: bytes, request_id: int, value: dict[str, Any]) -> bytes:
+    body = json.dumps(value, ensure_ascii=False, indent=4).encode("utf-8")
+    payload = b"\x92\x00" + _pack_length(len(body)) + body + b"\n"
+    header = bytearray(template[:20])
+    header[4:8] = len(payload).to_bytes(4, "little")
+    header[8:12] = request_id.to_bytes(4, "little")
+    return bytes(header) + payload
+
+
+def _response_for(method: str) -> dict[str, Any]:
+    if method == "RegisterClient":
+        return {"resultType": "int", "result": "1"}
+    if method == "GetInjectHwnd":
+        return {"resultType": "HWND", "result": "0000000000000000"}
+    if method == "RawExternSwitch":
+        return {"resultType": "long", "result": "0"}
+    return {"resultType": "nullptr"}
+
+
+def _load_templates(
+    capture_path: Path,
+    key: bytes,
+    required_methods: frozenset[str],
+) -> tuple[dict[str, bytes], bytes]:
+    templates: dict[str, bytes] = {}
+    response_template: bytes | None = None
+    with capture_path.open(encoding="utf-8") as stream:
+        for line in stream:
+            row = json.loads(line)
+            if row.get("direction") != "tc_to_client":
+                continue
+            for summary in row.get("frames", []):
+                frame = base64.b64decode(summary["base64"], validate=True)
+                if response_template is None and summary.get("json"):
+                    response_template = frame
+                body = extract_body(frame)
+                if body is None:
+                    continue
+                obj = decode_body(body, key)
+                method = obj.get("method")
+                if method in required_methods and method not in templates:
+                    templates[str(method)] = frame
+    missing = required_methods - templates.keys()
+    if missing:
+        raise ValueError(f"抓包缺少 HQMP 调用模板：{sorted(missing)}")
+    if response_template is None:
+        raise ValueError("抓包缺少 HQMP 外层回执模板")
+    return templates, response_template
+
+
+class HqmpDirectSession:
+    """用纯 Python HQMP 帧接收 TC 注册，并直接执行查询、报单和撤单。"""
+
+    def __init__(
+        self,
+        root: Path,
+        port: int,
+        capture_path: Path,
+        *,
+        enable_trade: bool = False,
+    ) -> None:
         self.root = root
         self.port = port
+        self.capture_path = capture_path
         self.enable_trade = enable_trade
         self.tc_process: subprocess.Popen[bytes] | None = None
-        self._rpc: Any = None
-        self._callback: Any = None
-        self._dll_directories: tuple[Any, ...] = ()
-        self._previous_cwd: Path | None = None
-        self._client_token: str | None = None
+        self._key = b""
+        self._templates: dict[str, bytes] = {}
+        self._response_template = b""
+        self._listener: socket.socket | None = None
+        self._connection: socket.socket | None = None
+        self._server_thread: threading.Thread | None = None
+        self._stop_event = threading.Event()
         self._client_registered = threading.Event()
         self._client_ready = threading.Event()
+        self._client_token: str | None = None
+        self._guid: bytes | None = None
+        self._server_error: Exception | None = None
         self._pending: dict[str, _PendingCall] = {}
-        self._lock = threading.Lock()
-        self._callback_error: str | None = None
+        self._state_lock = threading.Lock()
+        self._send_lock = threading.Lock()
+        self._call_lock = threading.Lock()
+        self._account: dict[str, Any] | None = None
 
-    def start(self, *, launch_tc: bool) -> None:
-        """启动本地 RPC 服务；可选启动实验副本 TC，绝不启动 Tdxw。"""
+    def start(self, *, launch_tc: bool, reuse_tc: bool = False) -> None:
+        """在回环地址启动 HQMP 服务；可选启动实验副本 TC，绝不启动 Tdxw。"""
         self.root = require_direct_lab_root(self.root)
+        self.capture_path = self.capture_path.resolve()
+        if not self.capture_path.is_file():
+            raise RuntimeError(f"HQMP 模板抓包不存在：{self.capture_path}")
         if not 1 <= self.port <= 65535:
             raise RuntimeError(f"HQMP 端口无效：{self.port}")
+        if launch_tc and reuse_tc:
+            raise ValueError("launch_tc 与 reuse_tc 不能同时启用")
         blockers = _running_trade_processes()
-        if blockers:
+        expected_tc = (self.root / "NewTc" / "TC.exe").resolve()
+        reusable = bool(blockers) and all(
+            name.lower() == "tc.exe" and _process_image_path(process_id) == expected_tc
+            for name, process_id in blockers
+        )
+        if blockers and not (reuse_tc and reusable):
             details = ", ".join(f"{name}({process_id})" for name, process_id in blockers)
             raise RuntimeError(f"已有交易客户端进程在运行：{details}")
+        if reuse_tc and not reusable:
+            raise RuntimeError("没有找到可复用的实验副本 TC.exe")
         _verify_ports_available((self.port,))
         _verify_lab_routing(self.root, self.port)
 
-        self._previous_cwd = Path.cwd()
-        os.chdir(self.root)
-        self._dll_directories = (
-            os.add_dll_directory(str(self.root)),
-            os.add_dll_directory(str(self.root / "NewTc")),
+        self._key = load_capture_key(self.root / "tdxRpc64.dll")
+        required = READ_ONLY_METHODS | (TRADE_METHODS if self.enable_trade else frozenset())
+        self._templates, self._response_template = _load_templates(
+            self.capture_path, self._key, required
         )
-        self._rpc = ctypes.CDLL(str(self.root / "tdxRpc64.dll"))
-        self._configure_rpc()
-
-        @_RpcCallback
-        def callback(
-            request_ptr: ctypes.POINTER(_RpcString),
-            response_ptr: ctypes.POINTER(_RpcString),
-        ) -> None:
-            try:
-                request = request_ptr.contents
-                raw = ctypes.string_at(request.data, request.length)
-                response = self._handle_request(raw)
-            except Exception as exc:
-                # ctypes 回调中的异常不能越过原生边界；这里只保留类型，不保存业务正文。
-                self._callback_error = type(exc).__name__
-                response = _response_for("")
-            _write_response(response_ptr, response)
-
-        self._callback = callback
-        if not self._rpc.initRemoteRpcServer(0, 0xA00000, self.port, 15, 10):
-            raise RuntimeError("initRemoteRpcServer 失败")
-        if not self._rpc.registerRpcServerInterface(b"rpcfunction", callback):
-            raise RuntimeError("registerRpcServerInterface 失败")
-        if not self._rpc.runRpcServerInterface():
-            raise RuntimeError("runRpcServerInterface 失败")
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
+        listener.bind(("127.0.0.1", self.port))
+        listener.listen(1)
+        listener.settimeout(0.2)
+        self._listener = listener
+        self._server_thread = threading.Thread(target=self._serve, daemon=True)
+        self._server_thread.start()
 
         if launch_tc:
             self.tc_process = subprocess.Popen(
@@ -178,58 +286,146 @@ class HqmpDirectSession:
                 cwd=self.root / "NewTc",
             )
 
-    def _configure_rpc(self) -> None:
-        self._rpc.initRemoteRpcServer.argtypes = (
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-            ctypes.c_int,
-        )
-        self._rpc.initRemoteRpcServer.restype = ctypes.c_bool
-        self._rpc.registerRpcServerInterface.argtypes = (ctypes.c_char_p, _RpcCallback)
-        self._rpc.registerRpcServerInterface.restype = ctypes.c_bool
-        self._rpc.runRpcServerInterface.argtypes = ()
-        self._rpc.runRpcServerInterface.restype = ctypes.c_bool
-        self._rpc.callRpcClientInterfaceByToken.argtypes = (
-            ctypes.c_char_p,
-            ctypes.POINTER(_RpcString),
-            ctypes.POINTER(_RpcString),
-        )
-        self._rpc.callRpcClientInterfaceByToken.restype = ctypes.c_bool
-        self._rpc.unInitRpcServer.argtypes = ()
-        self._rpc.unInitRpcServer.restype = None
+    def _serve(self) -> None:
+        assert self._listener is not None
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    connection, _ = self._listener.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    if self._stop_event.is_set():
+                        return
+                    raise
+                self._serve_connection(connection)
+        except Exception as exc:
+            self._server_error = exc
+            self._client_registered.set()
+            self._client_ready.set()
+            self._fail_pending(exc)
 
-    def _handle_request(self, raw: bytes) -> bytes:
-        body = json.loads(raw.decode("utf-8"))
-        if not isinstance(body, dict):
-            raise ValueError("HQMP 请求不是 JSON 对象")
-        method = str(body.get("method", ""))
-        params = body.get("params", {})
+    def _serve_connection(self, connection: socket.socket) -> None:
+        parser = FrameBuffer()
+        connection.settimeout(0.2)
+        with self._state_lock:
+            self._connection = connection
+            self._client_token = None
+            self._guid = None
+            self._account = None
+            self._client_registered.clear()
+            self._client_ready.clear()
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    chunk = connection.recv(64 * 1024)
+                except TimeoutError:
+                    continue
+                except OSError:
+                    if self._stop_event.is_set():
+                        return
+                    raise
+                if not chunk:
+                    break
+                for frame in parser.feed(chunk):
+                    self._handle_frame(frame)
+        finally:
+            with self._state_lock:
+                if self._connection is connection:
+                    self._connection = None
+                    self._client_token = None
+                    self._guid = None
+            connection.close()
+            self._fail_pending(ConnectionError("TC 已断开 HQMP 连接"))
+
+    def _handle_frame(self, frame: bytes) -> None:
+        guid = _extract_guid(frame)
+        if guid is not None:
+            self._guid = guid
+        body = extract_body(frame)
+        if body is None:
+            return
+        obj = decode_body(body, self._key)
+        method = str(obj.get("method", ""))
+        params = obj.get("params", {})
         if not isinstance(params, dict):
             params = {}
+        request_id = int.from_bytes(frame[8:12], "little")
+        self._send_frame(
+            _json_response(self._response_template, request_id, _response_for(method))
+        )
         if method == "RegisterClient":
             token = params.get("token")
             if isinstance(token, str) and token:
                 self._client_token = token
                 self._client_registered.set()
-        elif method == "NotifyMsgClient" and str(params.get("MsgType", "")) == "1":
-            # 两份完整抓包都在 104、119 之后收到 1，随后才开始账户及交易查询。
+        elif method == "NotifyMsgClient" and str(params.get("MsgType", "")) in {"1", "113"}:
             self._client_ready.set()
         elif method == "ReturnValueComp":
             token = str(params.get("token", ""))
-            with self._lock:
+            with self._state_lock:
                 pending = self._pending.get(token)
             if pending is not None:
                 pending.value = params.get("value")
                 pending.event.set()
-        return _response_for(method)
 
-    def wait_for_client(self, timeout: float) -> None:
-        if not self._client_ready.wait(timeout):
-            detail = f"，回调错误={self._callback_error}" if self._callback_error else ""
-            phase = "交易登录就绪通知" if self._client_registered.is_set() else "HQMP 客户端注册"
-            raise TimeoutError(f"等待 TC {phase}超时{detail}")
+    def _send_frame(self, frame: bytes) -> None:
+        with self._send_lock:
+            connection = self._connection
+            if connection is None:
+                raise ConnectionError("TC 尚未连接 HQMP 直接宿主")
+            connection.sendall(frame)
+
+    def _send_call(self, method: str, params: dict[str, Any]) -> None:
+        guid = self._guid
+        if guid is None:
+            raise RuntimeError("尚未取得 TC 的 callfunction GUID")
+        obj = {"method": method, "returnType": "", "params": params}
+        self._send_frame(_encode_call(self._templates[method], obj, self._key, guid))
+
+    def _fail_pending(self, error: Exception) -> None:
+        with self._state_lock:
+            pending_calls = list(self._pending.values())
+        for pending in pending_calls:
+            pending.error = error
+            pending.event.set()
+
+    def wait_for_client(self, timeout: float, *, require_ready: bool = True) -> None:
+        """等待 TC 注册；冷启动时还等待登录就绪通知。"""
+        deadline = time.monotonic() + timeout
+        target = self._client_ready if require_ready else self._client_registered
+        while not target.wait(min(0.2, max(0.0, deadline - time.monotonic()))):
+            if self.tc_process is not None and self.tc_process.poll() is not None:
+                raise RuntimeError(f"实验 TC 在注册前退出，退出码={self.tc_process.returncode}")
+            if time.monotonic() >= deadline:
+                phase = (
+                    "交易登录就绪通知"
+                    if require_ready and self._client_registered.is_set()
+                    else "HQMP 客户端注册"
+                )
+                raise TimeoutError(f"等待 TC {phase}超时")
+        if self._server_error is not None:
+            raise RuntimeError(f"HQMP 服务线程失败：{type(self._server_error).__name__}") from self._server_error
+
+    def _operation_token(self, method: str, params: dict[str, Any]) -> str:
+        if method == "OperateUser_0":
+            assert self._client_token is not None
+            return self._client_token
+        if method == "DoLevinGN_927":
+            return "927"
+        if method == "DoLevinGN_809":
+            return f"809{params.get('flag', '')}00"
+        if method == "DoLevinGN_807":
+            return "getall807kcdcount"
+        if method == "DoLevinGN_822":
+            return "822-1"
+        if method == "DoLevinGN_920":
+            return "920YMD"
+        if method == "DoLevinGN_803":
+            return f"803{params.get('qsid', '')}{params.get('zjzh', '')}"
+        if method == "DoLevinGN_830":
+            return "830-1"
+        return str(uuid.uuid4()).upper()
 
     def call(self, method: str, params: dict[str, Any], timeout: float = 20.0) -> Any:
         """调用已核验方法；交易方法还要求会话显式打开交易闸。"""
@@ -237,61 +433,51 @@ class HqmpDirectSession:
             raise ValueError(f"HQMP 直接宿主不认识方法：{method}")
         if method in TRADE_METHODS and not self.enable_trade:
             raise ValueError(f"HQMP 直接会话尚未打开交易闸：{method}")
-        if self._rpc is None or not self._client_token:
+        if self._client_token is None:
             raise RuntimeError("TC 尚未注册到 HQMP 直接宿主")
 
-        # OperateUser_0 是会话枚举：两份成功抓包都要求业务 token 与 TC 注册 token 相同。
-        # 其余方法使用独立 token，才能把异步 ReturnValueComp 精确关联到本次调用。
-        operation_token = (
-            self._client_token
-            if method == "OperateUser_0"
-            else "927"
-            if method == "DoLevinGN_927"
-            else f"cn-broker-direct-{uuid.uuid4().hex}"
-        )
-        request_params = dict(params)
-        request_params["token"] = operation_token
-        payload = json.dumps(
-            {"method": method, "params": request_params, "returnType": ""},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        request_buffer = ctypes.create_string_buffer(payload)
-        client_token_bytes = self._client_token.encode("utf-8")
-        client_token_buffer = ctypes.create_string_buffer(client_token_bytes)
-        request = _RpcString(
-            ctypes.cast(request_buffer, ctypes.c_void_p),
-            len(payload),
-            ctypes.sizeof(request_buffer),
-        )
-        client_token = _RpcString(
-            ctypes.cast(client_token_buffer, ctypes.c_void_p),
-            len(client_token_bytes),
-            ctypes.sizeof(client_token_buffer),
-        )
-        pending = _PendingCall()
-        with self._lock:
-            self._pending[operation_token] = pending
-        try:
-            queued = self._rpc.callRpcClientInterfaceByToken(
-                b"callfunction", ctypes.byref(request), ctypes.byref(client_token)
-            )
-            if not queued:
-                raise RuntimeError(f"TC 拒绝接收 HQMP 调用：{method}")
-            if not pending.event.wait(timeout):
-                if method in TRADE_METHODS:
-                    raise AckUnknown(f"{method} 已发给 TC，但等待回调超时，状态未知")
-                raise TimeoutError(f"等待只读调用回调超时：{method}")
-            return pending.value
-        finally:
-            with self._lock:
-                self._pending.pop(operation_token, None)
+        with self._call_lock:
+            operation_token = self._operation_token(method, params)
+            request_params = dict(params)
+            request_params["token"] = operation_token
+            pending = _PendingCall()
+            with self._state_lock:
+                self._pending[operation_token] = pending
+            try:
+                self._send_call(method, request_params)
+                if not pending.event.wait(timeout):
+                    if method in TRADE_METHODS:
+                        raise AckUnknown(f"{method} 已发给 TC，但等待回调超时，状态未知")
+                    raise TimeoutError(f"等待只读调用回调超时：{method}")
+                if pending.error is not None:
+                    raise pending.error
+                return pending.value
+            finally:
+                with self._state_lock:
+                    self._pending.pop(operation_token, None)
 
-    def probe(self, timeout: float = 20.0) -> dict[str, int]:
-        """自动映射当前账户，查询持仓、资产和委托，只返回条数统计。"""
+    def _initialize_account(self, timeout: float) -> tuple[list[Any], dict[str, Any]]:
         self.call("DoLevinGN_927", {"mode": "1", "semauto": "1"}, timeout)
         accounts = self.call("OperateUser_0", {}, timeout)
         account = _selected_account(accounts)
+        self._account = account
+        return accounts, account
+
+    def probe(self, timeout: float = 20.0) -> dict[str, int]:
+        """复现已成功的初始化序列，只返回账户、持仓、资产和委托条数。"""
+        accounts, account = self._initialize_account(timeout)
+        for flag in ("5", "6"):
+            self.call(
+                "DoLevinGN_809",
+                {"flag": flag, "setcode": "0", "qsid": "0", "zqdm": "", "zjzh": ""},
+                timeout,
+            )
+        orders = self.call("DoLevinGN_807", {}, timeout)
+        order_filter = {"setcode": "-1", "wtbh": "", "zqdm": ""}
+        self.call("DoLevinGN_822", order_filter, timeout)
+        self.call("DoLevinGN_822", order_filter, timeout)
+        self.call("DoLevinGN_920", {}, timeout)
+
         qsid = str(account.get("qsid", ""))
         account_id = str(account.get("zjzh", ""))
         if not qsid or not account_id:
@@ -306,7 +492,7 @@ class HqmpDirectSession:
             {"qsid": qsid, "szID": "", "zjzh": account_id},
             timeout,
         )
-        orders = self.call("DoLevinGN_807", {}, timeout)
+        self.call("DoLevinGN_822", order_filter, timeout)
         for name, value in (("持仓", positions), ("资产", assets), ("委托", orders)):
             if not isinstance(value, list):
                 raise RuntimeError(f"{name}查询没有返回列表")
@@ -405,7 +591,9 @@ class HqmpDirectSession:
         return {"order_id": order_id, "message": message}
 
     def _current_account(self, timeout: float) -> dict[str, Any]:
-        return _selected_account(self.call("OperateUser_0", {}, timeout))
+        if self._account is None:
+            _, self._account = self._initialize_account(timeout)
+        return self._account
 
     @staticmethod
     def _single_result(action: str, values: Any) -> dict[str, Any]:
@@ -414,7 +602,7 @@ class HqmpDirectSession:
         return values[0]
 
     def stop(self) -> None:
-        """只关闭本宿主启动的 TC，并释放 RPC 服务。"""
+        """只关闭本宿主启动的 TC，并释放监听端口。"""
         if self.tc_process is not None and self.tc_process.poll() is None:
             self.tc_process.terminate()
             try:
@@ -423,12 +611,15 @@ class HqmpDirectSession:
                 self.tc_process.kill()
                 self.tc_process.wait(timeout=5)
         self.tc_process = None
-        if self._rpc is not None:
-            self._rpc.unInitRpcServer()
-            self._rpc = None
-        for directory in self._dll_directories:
-            directory.close()
-        self._dll_directories = ()
-        if self._previous_cwd is not None:
-            os.chdir(self._previous_cwd)
-            self._previous_cwd = None
+        self._stop_event.set()
+        if self._connection is not None:
+            try:
+                self._connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        if self._listener is not None:
+            self._listener.close()
+            self._listener = None
+        if self._server_thread is not None:
+            self._server_thread.join(timeout=3)
+            self._server_thread = None
