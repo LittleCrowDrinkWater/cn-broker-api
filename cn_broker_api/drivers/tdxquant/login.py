@@ -541,7 +541,7 @@ def _do_trade_login(dlg: int, ctls: List[Ctl], cred: dict) -> bool:
     ox, oy, _w, _h = _wrect(dlg)
     bcx, bcy = (btn[0] + btn[2]) // 2, (btn[1] + btn[3]) // 2
     if acc_c is not None:
-        _say(f"  账号已核对：0x{acc_c.hwnd:x} 里是 {acc_c.text.strip()}（只核对不填）")
+        _say(f"  账号已核对：控件 0x{acc_c.hwnd:x} 与请求一致（只核对不填）")
     pwd = str(cred["password"])
     focus_field(pw_c)
     clear_field(pw_c)

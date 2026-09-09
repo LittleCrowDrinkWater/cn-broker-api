@@ -14,7 +14,7 @@ class TdxQuantConfig:
     tdx_home: Optional[Path] = None
     #: MCP over HTTP 的地址。端口属主是客户端进程自己（`Tdxw.exe`）。
     mcp_url: str = "http://127.0.0.1:17709"
-    #: 跟客户端说话走哪条通道：`mcp`（HTTP，端口属主是客户端进程）或 `ctypes`（加载 DLL）。
+    #: 跟客户端说话走哪条通道：`mcp`、`ctypes` 或纯 Python `hqmp`。
     #: **不自动回落**：两条通道的故障表现完全不同，自动回落会让"我以为走的是 A、其实
     #: 走的是 B"，而这是交易通道——同一个操作在两条路上可能一个成功一个失败。
     transport: str = "mcp"
@@ -25,6 +25,17 @@ class TdxQuantConfig:
     cancel_confirm_timeout: float = 5.0
     #: 撤单确认的重查间隔（秒）。
     cancel_confirm_interval: float = 1.0
+    #: 直接 HQMP 的回环监听端口；只在 ``transport = hqmp`` 时使用。
+    hqmp_port: int = 0
+    #: 仅含已核验调用模板的仓库外抓包。
+    hqmp_capture: Optional[Path] = None
+    #: 显式打开 HQMP 报单/撤单闸。默认关闭时只读。
+    hqmp_enable_trade: bool = False
+    #: 服务启动时是否接管已运行的实验 TC；默认要求无 TC 后冷启动。
+    hqmp_reuse_tc: bool = False
+    #: 直接通道额外的单笔风险上限，在构造任何 HQMP 交易帧前检查。
+    hqmp_max_order_size: int = 100
+    hqmp_max_order_notional: float = 2000.0
     #: 交易密码从哪来：
     #:   file    ＝ 本服务自己读 `cred_file`（搬家阶段，行为与搬家前逐字节相同）
     #:   request ＝ 后端在调用里带过来，本服务**只在内存留当天一份、绝不落盘**

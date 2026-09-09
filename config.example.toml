@@ -83,7 +83,7 @@ mcp_url = "http://127.0.0.1:17709"
 # 桌面模式：
 #   full     ＝ 原来的 Tdxw.exe + TC.exe，broker API 可以按原配方拉起两者
 #   headless ＝ Tdxw.exe 不启动，量化 DLL 由独立 headless 宿主持有；broker API 只管理 TC.exe
-# headless 模式必须配合 transport = "mcp"，且 tdx_home 必须指向带 `.trade-lab-marker`
+# headless 模式必须配合 transport = "mcp" 或 "hqmp"，且 tdx_home 必须指向带 `.trade-lab-marker`
 # 的实验副本。默认 full；不要直接对日常交易安装目录做 headless 实验。
 desktop_mode = "full"
 
@@ -112,10 +112,27 @@ max_password_submits_per_day = 10
 #    不提供 force 参数。
 max_consecutive_failures = 3
 
-# 跟客户端说话走哪条通道：mcp（客户端自己开的 HTTP 端口）或 ctypes（本进程加载它的 DLL）。
+# 跟客户端说话走哪条通道：mcp（客户端 HTTP）、ctypes（本进程加载 DLL），
+# 或 hqmp（纯 Python 托管实验副本 TC）。hqmp 只允许在 headless 实验副本中使用。
 # 🔴 **不自动回落**：两条通道的故障表现完全不同，自动回落会让"我以为走的是 A、其实走的是
 #    B"，而这是交易通道——同一个操作在两条路上可能一个成功一个失败。默认 mcp。
 transport = "mcp"
+
+# 以下只在 transport = "hqmp" 时生效。端口必须与实验副本 TMTconfig.ini 里的 HQMP 一致；
+# 抓包只用作已核验的非敏感调用帧模板，路径必须在仓库外。
+hqmp_port = 13575
+hqmp_capture = "D:/your-private-data/hqmp-template.jsonl"
+
+# 默认只读。只有明确需要报单/撤单时才打开；调用方还必须显式给证券名称。
+hqmp_enable_trade = false
+
+# false 要求启动 broker API 时没有任何交易客户端进程，适合冷启动验收。
+# true 只接管路径精确属于实验副本的 TC.exe。
+hqmp_reuse_tc = false
+
+# 即使打开交易闸，超出任一上限也会在构造 HQMP 交易帧前拒绝。
+hqmp_max_order_size = 100
+hqmp_max_order_notional = 2000.0
 
 # 撤单之后最多等几秒去确认它真撤掉了（墙钟），以及多久重查一次。
 # 🔴 「我发了撤单」与「这笔没成交」是两件事：实测撤单中部分成交 1300/20900 股 ⇒ 本服务

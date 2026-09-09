@@ -103,7 +103,7 @@ class SubmitLatch:
             nf = fails.get(acc, 0)
             if nf >= self.max_consecutive_failures:
                 raise SubmitBlocked(
-                    f"账户 {acc or '(默认)'} 已连续 {nf} 次提交密码没成功"
+                    f"当前账户已连续 {nf} 次提交密码没成功"
                     f"（上限 {self.max_consecutive_failures}）⇒ 不再自动提交。"
                     f"多半是库里那个密码不对：请人工登录一次确认，"
                     f"**成功登录会把这个计数清零**。"
@@ -116,7 +116,7 @@ class SubmitLatch:
             nd = counts.get(acc, 0)
             if nd >= self.max_per_day:
                 raise SubmitBlocked(
-                    f"账户 {acc or '(默认)'} 今天已提交过 {nd} 次交易密码"
+                    f"当前账户今天已提交过 {nd} 次交易密码"
                     f"（上限 {self.max_per_day}）⇒ 不再自动提交。"
                     f"这个闸防的是我们自己的代码循环提交——连着提交这么多次本身就说明有问题，"
                     f"该去看日志而不是调大它")
@@ -125,10 +125,10 @@ class SubmitLatch:
             atomic_write_json(self._path(d), counts)
             fails[acc] = nf + 1                      # 先按失败记，成功再清零
             atomic_write_json(self._fail_path, fails)
-            logger.warning("[latch] 账户 %s 提交密码：今天第 %d 次（上限 %d）；"
+            logger.warning("[latch] 当前账户提交密码：今天第 %d 次（上限 %d）；"
                            "连续未成功 %d 次（上限 %d）",
-                           acc or "(默认)", nd + 1, self.max_per_day,
-                           nf + 1, self.max_consecutive_failures)
+                           nd + 1, self.max_per_day, nf + 1,
+                           self.max_consecutive_failures)
 
     def settle(self, account: str, ok: bool) -> None:
         """把这一趟的结果落下来。**成功就把连续失败清零**。
@@ -144,7 +144,7 @@ class SubmitLatch:
             fails = self._read_counts(self._fail_path, self.max_consecutive_failures + 1)
             fails.pop("__unreadable__", None)
             if fails.get(acc):
-                logger.info("[latch] 账户 %s 登录成功 ⇒ 连续失败计数 %d 清零",
-                            acc or "(默认)", fails[acc])
+                logger.info("[latch] 当前账户登录成功 ⇒ 连续失败计数 %d 清零",
+                            fails[acc])
             fails[acc] = 0
             atomic_write_json(self._fail_path, fails)

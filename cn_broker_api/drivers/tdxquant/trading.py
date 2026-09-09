@@ -89,7 +89,8 @@ class TdxQuantTrading:
                      price: Optional[float] = None, order_type: str = "limit",
                      client_order_id: Optional[str] = None,
                      credit_kind: Optional[CreditOrderKind] = None,
-                     notify: Optional[int] = None) -> Dict[str, Any]:
+                     notify: Optional[int] = None,
+                     security_name: Optional[str] = None) -> Dict[str, Any]:
         """报一笔限价单。
 
         `credit_kind` 给了就按那个信用委托类型报；不给一律报普通买卖——**本服务不持有

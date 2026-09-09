@@ -20,6 +20,18 @@ from cn_broker_api.symbols import market_of, symbol_key
 from cn_broker_api.trade.ack_unknown import AckUnknown
 from cn_broker_api.trade.credit_kind import CREDIT_KIND_SIDE, CreditOrderKind
 from cn_broker_api.trade.order_rejected import OrderRejected
+from cn_broker_api.trade.query_unavailable import QueryUnavailable
+from cn_broker_api.trade.wire import (
+    CANCEL_DONE,
+    CANCEL_FILLED,
+    CANCEL_TIMEOUT,
+    CANCELED,
+    FILLED,
+    LIVE,
+    PARTIALLY_FILLED,
+    cancel_result,
+    order_row,
+)
 
 from .headless import (
     LAB_MARKER,
@@ -50,6 +62,7 @@ READ_ONLY_METHODS = frozenset({
 })
 TRADE_METHODS = frozenset({"DoLevinGN_909", "DoLevinGN_808"})
 DIRECT_MONEY_FIELDS = frozenset({"keyong", "nmoney", "yu", "zican", "ztzj"})
+_NO_ORDER_MESSAGES = ("没有对应的委托", "无对应委托", "未找到对应委托")
 
 
 @dataclass
@@ -57,6 +70,39 @@ class _PendingCall:
     event: threading.Event = field(default_factory=threading.Event)
     value: Any = None
     error: Exception | None = None
+
+
+def _row_value(row: dict[str, Any], *keys: str) -> Any:
+    """兼容抓包小写字段与 tqcenter 驱动的驼峰字段。"""
+    for key in keys:
+        if key in row and row[key] not in (None, ""):
+            return row[key]
+    lower = {str(key).lower(): value for key, value in row.items()}
+    for key in keys:
+        value = lower.get(key.lower())
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _number(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _true_flag(value: Any) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes"}
+
+
+def _order_time(value: Any) -> str | None:
+    raw = str(value or "").replace(":", "").strip()
+    if not raw.isdigit() or len(raw) not in {5, 6}:
+        return None
+    hms = raw.zfill(6)
+    hour, minute, second = int(hms[:2]), int(hms[2:4]), int(hms[4:])
+    return hms if hour <= 23 and minute <= 59 and second <= 59 else None
 
 
 def require_direct_lab_root(root: Path) -> Path:
@@ -601,6 +647,266 @@ class HqmpDirectSession:
             raise OrderRejected(f"TC 拒绝报单：{message or '未返回委托编号'}", broker_message=message)
         return {"order_id": order_id, "message": message}
 
+    def query_order(self, *, order_id: str, timeout: float = 20.0) -> dict[str, Any] | None:
+        """用 807 与 822 两份柜台视图按委托编号查询，并拒绝歧义结果。"""
+        order_id = str(order_id).strip()
+        if not order_id:
+            raise ValueError("查询委托必须提供委托编号")
+        observations: list[dict[str, Any]] = []
+        failures: list[str] = []
+        filters = {"setcode": "-1", "wtbh": order_id, "zqdm": ""}
+        calls = (
+            ("DoLevinGN_807", filters),
+            ("DoLevinGN_822", filters),
+        )
+        deadline = time.monotonic() + timeout
+        for method, params in calls:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failures.append(f"{method}:总查询超时")
+                continue
+            try:
+                values = self.call(method, params, remaining)
+            except Exception as exc:  # noqa: BLE001 — 另一份柜台视图仍可能给出有效证据
+                failures.append(f"{method}:{type(exc).__name__}")
+                continue
+            if not isinstance(values, list):
+                failures.append(f"{method}:响应不是列表")
+                continue
+            matches = [
+                row for row in values
+                if isinstance(row, dict)
+                and str(_row_value(row, "wtbh", "Wtbh") or "").strip() == order_id
+            ]
+            if len(matches) > 1:
+                raise QueryUnavailable(f"{method} 返回多条相同委托编号，拒绝猜测目标委托")
+            if matches:
+                observations.append(matches[0])
+
+        if observations:
+            symbols = {
+                str(_row_value(row, "zqdm", "Code", "StockCode") or "").strip()
+                for row in observations
+                if _row_value(row, "zqdm", "Code", "StockCode") not in (None, "")
+            }
+            if len(symbols) > 1:
+                raise QueryUnavailable("807 与 822 对同一委托编号返回了不同证券代码")
+            # 822 在 807 之后调用，若两者状态正好跨过柜台更新边界，后一份证据更新。
+            return observations[-1]
+        if failures:
+            raise QueryUnavailable("直接 HQMP 委托查询判不了：" + "、".join(failures))
+        return None
+
+    def query_orders(self, *, timeout: float = 20.0) -> list[dict[str, Any]]:
+        """查询当日委托原始行。
+
+        ``None`` 或非列表响应是查询失败，不是“今日无委托”。空列表才是
+        可信的空委托簿。
+        """
+        values = self.call("DoLevinGN_807", {}, timeout)
+        if not isinstance(values, list):
+            raise QueryUnavailable("直接 HQMP 当日委托查询没有返回列表")
+        if not all(isinstance(row, dict) for row in values):
+            raise QueryUnavailable("直接 HQMP 当日委托包含非对象行")
+        return values
+
+    def query_positions(self, *, timeout: float = 20.0) -> list[dict[str, Any]]:
+        """查询当前账户持仓原始行；账户参数只从已选中账户动态构造。"""
+        account = self._current_account(timeout)
+        qsid = str(account.get("qsid", "")).strip()
+        account_id = str(account.get("zjzh", "")).strip()
+        if not qsid or not account_id:
+            raise QueryUnavailable("当前账户缺少 qsid 或 zjzh，无法查询持仓")
+        values = self.call(
+            "DoLevinGN_803",
+            {"qsid": qsid, "szID": "", "zjzh": account_id, "zqdm": ""},
+            timeout,
+        )
+        if not isinstance(values, list):
+            raise QueryUnavailable("直接 HQMP 持仓查询没有返回列表")
+        if not all(isinstance(row, dict) for row in values):
+            raise QueryUnavailable("直接 HQMP 持仓包含非对象行")
+        return values
+
+    def query_assets(self, *, timeout: float = 20.0) -> list[dict[str, Any]]:
+        """查询当前账户资产原始行；返回不可解析时不伪造全零账户。"""
+        account = self._current_account(timeout)
+        qsid = str(account.get("qsid", "")).strip()
+        account_id = str(account.get("zjzh", "")).strip()
+        if not qsid or not account_id:
+            raise QueryUnavailable("当前账户缺少 qsid 或 zjzh，无法查询资产")
+        values = self.call(
+            "DoLevinGN_830",
+            {"qsid": qsid, "szID": "", "zjzh": account_id},
+            timeout,
+        )
+        if not isinstance(values, list):
+            raise QueryUnavailable("直接 HQMP 资产查询没有返回列表")
+        if not all(isinstance(row, dict) for row in values):
+            raise QueryUnavailable("直接 HQMP 资产包含非对象行")
+        return values
+
+    @staticmethod
+    def _direct_order_state(row: dict[str, Any]) -> str:
+        size = _number(_row_value(row, "wtsl", "WtVol"))
+        filled = _number(_row_value(row, "cjsl", "CjVol"))
+        status_text = str(
+            _row_value(row, "ztsm", "wtztsm", "wtzt", "StatusText", "status_text") or ""
+        )
+        if size > 0 and filled >= size:
+            return FILLED
+        if _true_flag(_row_value(row, "cdflag")) or "已撤" in status_text:
+            return CANCELED
+        if any(word in status_text for word in ("废单", "拒绝", "无效")):
+            return "rejected"
+        return PARTIALLY_FILLED if filled > 0 else LIVE
+
+    @classmethod
+    def _direct_order_row(cls, row: dict[str, Any]) -> dict[str, Any]:
+        code = str(_row_value(row, "zqdm", "Code", "StockCode") or "").strip()
+        setcode = str(_row_value(row, "setcode") or "").strip()
+        market = "SH" if setcode == "1" else ("SZ" if setcode == "0" else market_of(code))
+        symbol = f"{code}.{market}" if code else ""
+        side_flag = str(_row_value(row, "bsflag", "BSFlag") or "").strip()
+        side = "buy" if side_flag == "0" else ("sell" if side_flag == "1" else None)
+        return order_row(
+            order_id=str(_row_value(row, "wtbh", "Wtbh") or "").strip(),
+            symbol=symbol,
+            side=side,
+            status=cls._direct_order_state(row),
+            size=_row_value(row, "wtsl", "WtVol"),
+            price=_row_value(row, "wtjg", "WtPrice", "price"),
+            filled_size=_row_value(row, "cjsl", "CjVol") or 0,
+            avg_fill_price=_row_value(row, "cjjg", "CjPrice") or 0,
+            order_time=_order_time(_row_value(row, "wtsj", "Time")),
+        )
+
+    @classmethod
+    def _direct_order_cancellable(cls, row: dict[str, Any]) -> bool:
+        return (
+            cls._direct_order_state(row) in {LIVE, PARTIALLY_FILLED}
+            and _true_flag(_row_value(row, "kcdflag"))
+        )
+
+    def cancel_order_and_wait(
+        self,
+        *,
+        order_id: str,
+        symbol: str = "",
+        visibility_timeout: float = 10.0,
+        settle_timeout: float = 10.0,
+        interval: float = 0.2,
+        call_timeout: float = 20.0,
+    ) -> dict[str, Any]:
+        """等委托唯一可见且可撤后提交撤单，再轮询到终态或明确返回状态未知。
+
+        报单回调成功与委托进入撤单索引之间存在真实可见性窗口。这里绝不补发报单；首次撤单
+        若明确返回“没有对应委托”，只有重新查到同一编号仍可撤时才允许再试一次撤单。
+        撤单回调超时则只对账、不重发，因为请求可能已经执行。
+        """
+        order_id = str(order_id).strip()
+        if not order_id:
+            raise ValueError("撤单必须提供委托编号")
+        if min(visibility_timeout, settle_timeout, call_timeout) <= 0 or interval < 0:
+            raise ValueError("撤单等待时间必须为正数，轮询间隔不能为负数")
+        expected_symbol = symbol_key(symbol) if str(symbol).strip() else ""
+
+        def verified(row: dict[str, Any]) -> dict[str, Any]:
+            actual_symbol = symbol_key(
+                str(_row_value(row, "zqdm", "Code", "StockCode") or "")
+            )
+            if expected_symbol and actual_symbol != expected_symbol:
+                raise ValueError(
+                    f"委托 {order_id} 实际证券代码 {actual_symbol or '(空)'} "
+                    f"与请求的 {expected_symbol} 不一致，拒绝撤单"
+                )
+            return row
+
+        visible_deadline = time.monotonic() + visibility_timeout
+        last_row: dict[str, Any] | None = None
+        while True:
+            try:
+                row = self.query_order(
+                    order_id=order_id,
+                    timeout=min(call_timeout, max(0.001, visible_deadline - time.monotonic())),
+                )
+            except QueryUnavailable:
+                row = None
+            if row is not None:
+                row = verified(row)
+                last_row = row
+                state = self._direct_order_state(row)
+                canonical = self._direct_order_row(row)
+                if state == CANCELED:
+                    return cancel_result(outcome=CANCEL_DONE, order=canonical,
+                                         reason="柜台查询显示委托已经撤销")
+                if state == FILLED:
+                    return cancel_result(outcome=CANCEL_FILLED, order=canonical,
+                                         reason="委托在撤单提交前已经全部成交")
+                if state == "rejected":
+                    raise OrderRejected("委托在撤单提交前已被柜台拒绝")
+                if self._direct_order_cancellable(row):
+                    break
+            if time.monotonic() >= visible_deadline:
+                return cancel_result(
+                    outcome=CANCEL_TIMEOUT,
+                    order=None if last_row is None else self._direct_order_row(last_row),
+                    reason="委托在等待窗口内尚未唯一可见且可撤——状态未定；绝不重复报单",
+                )
+            time.sleep(interval)
+
+        cancel_attempts = 0
+        cancel_was_uncertain = False
+        cancel_authorized = True
+        settle_deadline = time.monotonic() + settle_timeout
+        while True:
+            if cancel_authorized and not cancel_was_uncertain and cancel_attempts < 2:
+                cancel_authorized = False
+                cancel_attempts += 1
+                try:
+                    self.cancel_order(order_id=order_id, timeout=call_timeout)
+                    cancel_was_uncertain = True
+                except AckUnknown:
+                    # 已发出但没收到回调；此后只能查询，重发可能把“已经受理”误当成“没发出”。
+                    cancel_was_uncertain = True
+                except OrderRejected as exc:
+                    message = str(exc.broker_message or exc)
+                    if not any(hint in message for hint in _NO_ORDER_MESSAGES):
+                        raise
+
+            try:
+                row = self.query_order(
+                    order_id=order_id,
+                    timeout=min(call_timeout, max(0.001, settle_deadline - time.monotonic())),
+                )
+            except QueryUnavailable:
+                row = None
+            if row is not None:
+                row = verified(row)
+                last_row = row
+                state = self._direct_order_state(row)
+                canonical = self._direct_order_row(row)
+                if state == CANCELED:
+                    return cancel_result(outcome=CANCEL_DONE, order=canonical,
+                                         reason="柜台已确认撤销")
+                if state == FILLED:
+                    return cancel_result(outcome=CANCEL_FILLED, order=canonical,
+                                         reason="撤单期间委托已全部成交")
+                if state == "rejected":
+                    raise OrderRejected("撤单对账时发现原委托已被柜台拒绝")
+                # 只有明确拒绝“没有对应委托”且重新查到仍可撤，才进行第二次撤单。
+                if (not cancel_was_uncertain and cancel_attempts < 2
+                        and self._direct_order_cancellable(row)):
+                    cancel_authorized = True
+                    continue
+            if time.monotonic() >= settle_deadline:
+                return cancel_result(
+                    outcome=CANCEL_TIMEOUT,
+                    order=None if last_row is None else self._direct_order_row(last_row),
+                    reason="撤单提交后未在等待窗口内观察到终态——状态未定，须继续对账",
+                )
+            time.sleep(interval)
+
     def cancel_order(self, *, order_id: str, timeout: float = 20.0) -> dict[str, str]:
         """按已解码的 ``DoLevinGN_808`` 契约提交撤单。"""
         order_id = str(order_id).strip()
@@ -625,6 +931,21 @@ class HqmpDirectSession:
         if self._account is None:
             _, self._account = self._initialize_account(timeout)
         return self._account
+
+    def require_account(self, expected_account: str, *, timeout: float = 20.0) -> None:
+        """确认 TC 当前选中的资金账号与调用方一致。
+
+        空的 ``expected_account`` 代表调用方明确接受 TC 默认账户。不一致时的错误
+        不回显任何一边的账号，避免把账户信息带入 HTTP 日志。
+        """
+        expected_account = str(expected_account).strip()
+        if not expected_account:
+            return
+        selected = str(self._current_account(timeout).get("zjzh", "")).strip()
+        if not selected:
+            raise QueryUnavailable("直接 HQMP 当前账户缺少资金账号，无法核对请求账户")
+        if selected != expected_account:
+            raise ValueError("TC 当前选中账户与请求账户不一致，拒绝执行")
 
     @staticmethod
     def _single_result(action: str, values: Any) -> dict[str, Any]:

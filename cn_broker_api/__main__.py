@@ -100,8 +100,14 @@ def main() -> int:
 
     # threads=8：并发极低，但登录那一趟会占住一个线程几十秒，给 1~2 个的话那期间
     # 连 /v1/health 都打不动。
-    serve(app, host=BIND_HOST, port=cfg.server.port, threads=8,
-          ident="cn-broker-api")
+    try:
+        serve(app, host=BIND_HOST, port=cfg.server.port, threads=8,
+              ident="cn-broker-api")
+    finally:
+        dog.stop()
+        close = getattr(driver, "close", None)
+        if close is not None:
+            close()
     return 0
 
 

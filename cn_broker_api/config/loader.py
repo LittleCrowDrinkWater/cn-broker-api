@@ -86,14 +86,29 @@ def load(path: Optional[Path] = None) -> Config:
         raise ConfigError(f"cred_source 只能是 file / request，收到 {cred_source!r}")
 
     transport = str(tq.get("transport") or "mcp").strip().lower()
-    if transport not in ("mcp", "ctypes"):
-        raise ConfigError(f"transport 只能是 mcp / ctypes，收到 {transport!r}")
+    if transport not in ("mcp", "ctypes", "hqmp"):
+        raise ConfigError(f"transport 只能是 mcp / ctypes / hqmp，收到 {transport!r}")
 
     desktop_mode = str(tq.get("desktop_mode") or "full").strip().lower()
     if desktop_mode not in ("full", "headless"):
         raise ConfigError(f"desktop_mode 只能是 full / headless，收到 {desktop_mode!r}")
-    if desktop_mode == "headless" and transport != "mcp":
-        raise ConfigError("desktop_mode = headless 时 transport 必须是 mcp")
+    if desktop_mode == "headless" and transport not in ("mcp", "hqmp"):
+        raise ConfigError("desktop_mode = headless 时 transport 必须是 mcp 或 hqmp")
+    if transport == "hqmp" and desktop_mode != "headless":
+        raise ConfigError("transport = hqmp 时 desktop_mode 必须是 headless")
+
+    hqmp_port = int(tq.get("hqmp_port") or 0)
+    hqmp_capture = _as_path(tq.get("hqmp_capture"))
+    hqmp_enable_trade = bool(tq.get("hqmp_enable_trade", False))
+    hqmp_max_order_size = int(tq.get("hqmp_max_order_size") or 100)
+    hqmp_max_order_notional = float(tq.get("hqmp_max_order_notional") or 2000.0)
+    if transport == "hqmp":
+        if not 1 <= hqmp_port <= 65535:
+            raise ConfigError("transport = hqmp 时必须给 1~65535 的 hqmp_port")
+        if hqmp_capture is None:
+            raise ConfigError("transport = hqmp 时必须给仓库外的 hqmp_capture")
+        if hqmp_max_order_size <= 0 or hqmp_max_order_notional <= 0:
+            raise ConfigError("HQMP 单笔数量和金额上限必须为正数")
 
     name = str((drv.get("name") if isinstance(drv, dict) else None) or "tdxquant").lower()
     if name not in ("tdxquant", "paper"):
@@ -124,7 +139,13 @@ def load(path: Optional[Path] = None) -> Config:
             transport=transport,
             desktop_mode=desktop_mode,
             cancel_confirm_timeout=float(tq.get("cancel_confirm_timeout") or 5.0),
-            cancel_confirm_interval=float(tq.get("cancel_confirm_interval") or 1.0)),
+            cancel_confirm_interval=float(tq.get("cancel_confirm_interval") or 1.0),
+            hqmp_port=hqmp_port,
+            hqmp_capture=hqmp_capture,
+            hqmp_enable_trade=hqmp_enable_trade,
+            hqmp_reuse_tc=bool(tq.get("hqmp_reuse_tc", False)),
+            hqmp_max_order_size=hqmp_max_order_size,
+            hqmp_max_order_notional=hqmp_max_order_notional),
         watchdog=watchdog,
         driver=name,
         source_path=p if p.exists() else None,

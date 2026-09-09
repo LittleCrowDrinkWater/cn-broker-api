@@ -4,6 +4,7 @@ import threading
 
 import pytest
 
+from cn_broker_api.drivers.tdxquant import hqmp_direct as hqmp_module
 from cn_broker_api.drivers.tdxquant.hqmp_capture import decode_body, encode_body, extract_body
 from cn_broker_api.drivers.tdxquant.hqmp_direct import (
     HqmpDirectSession,
@@ -14,6 +15,9 @@ from cn_broker_api.drivers.tdxquant.hqmp_direct import (
     _selected_account,
 )
 from cn_broker_api.trade.credit_kind import CreditOrderKind
+from cn_broker_api.trade.ack_unknown import AckUnknown
+from cn_broker_api.trade.order_rejected import OrderRejected
+from cn_broker_api.trade.query_unavailable import QueryUnavailable
 
 
 def _call_frame(value, key, guid=b"A" * 36, request_id=0):
@@ -360,3 +364,286 @@ def test_rejects_invalid_prices_before_account_lookup(tmp_path, monkeypatch, pri
             price=price,
         )
     assert not looked_up
+
+
+def _direct_order(**changes):
+    row = {
+        "wtbh": "private-order",
+        "zqdm": "000001",
+        "setcode": "0",
+        "bsflag": "0",
+        "wtsl": "100",
+        "wtjg": "10.72",
+        "cjsl": "0",
+        "cjjg": "0",
+        "cdflag": "0",
+        "kcdflag": "1",
+        "wtsj": "93000",
+        "ztsm": "买入@正常委托@",
+    }
+    row.update(changes)
+    return row
+
+
+def test_query_order_uses_the_later_822_observation(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    calls = []
+
+    def call(method, params, timeout=20.0):
+        calls.append((method, params, timeout))
+        if method == "DoLevinGN_807":
+            return [_direct_order()]
+        return [_direct_order(cdflag="1", kcdflag="0", ztsm="买入@已撤@")]
+
+    monkeypatch.setattr(host, "call", call)
+
+    got = host.query_order(order_id="private-order", timeout=3.0)
+
+    assert host._direct_order_state(got) == "canceled"
+    assert [(method, params) for method, params, _timeout in calls] == [
+        ("DoLevinGN_807", {
+            "setcode": "-1", "wtbh": "private-order", "zqdm": "",
+        }),
+        ("DoLevinGN_822", {
+            "setcode": "-1", "wtbh": "private-order", "zqdm": "",
+        }),
+    ]
+    assert all(0 < timeout <= 3.0 for _method, _params, timeout in calls)
+
+
+def test_cancel_waits_until_the_order_is_visible_and_cancellable(tmp_path, monkeypatch):
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    observations = iter([
+        None,
+        _direct_order(),
+        _direct_order(cdflag="1", kcdflag="0", ztsm="买入@已撤@"),
+    ])
+    cancels = []
+    monkeypatch.setattr(host, "query_order", lambda **kw: next(observations))
+    monkeypatch.setattr(
+        host,
+        "cancel_order",
+        lambda **kw: cancels.append(kw) or {"order_id": kw["order_id"], "message": ""},
+    )
+
+    got = host.cancel_order_and_wait(
+        order_id="private-order", visibility_timeout=1.0,
+        settle_timeout=1.0, interval=0.0, call_timeout=3.0,
+    )
+
+    assert got["outcome"] == "canceled" and got["canceled"] is True
+    assert got["order"]["status"] == "canceled"
+    assert got["order"]["order_time"] == "093000"
+    assert cancels == [{"order_id": "private-order", "timeout": 3.0}]
+
+
+def test_cancel_retries_once_only_after_a_fresh_cancellable_observation(tmp_path, monkeypatch):
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    observations = iter([
+        _direct_order(),
+        _direct_order(),
+        _direct_order(cdflag="1", kcdflag="0", ztsm="买入@已撤@"),
+    ])
+    attempts = []
+    monkeypatch.setattr(host, "query_order", lambda **kw: next(observations))
+
+    def cancel_order(**kw):
+        attempts.append(kw)
+        if len(attempts) == 1:
+            raise OrderRejected("TC 拒绝撤单", broker_message="没有对应的委托信息")
+        return {"order_id": kw["order_id"], "message": "撤单已报"}
+
+    monkeypatch.setattr(host, "cancel_order", cancel_order)
+
+    got = host.cancel_order_and_wait(
+        order_id="private-order", visibility_timeout=1.0,
+        settle_timeout=1.0, interval=0.0, call_timeout=3.0,
+    )
+
+    assert got["outcome"] == "canceled"
+    assert len(attempts) == 2
+
+
+def test_cancel_does_not_retry_without_a_fresh_cancellable_observation(tmp_path, monkeypatch):
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    query_count = 0
+    attempts = []
+    clock = iter(i / 10 for i in range(100))
+    monkeypatch.setattr(hqmp_module.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(hqmp_module.time, "sleep", lambda _seconds: None)
+
+    def query_order(**_kwargs):
+        nonlocal query_count
+        query_count += 1
+        return _direct_order() if query_count == 1 else None
+
+    def cancel_order(**kwargs):
+        attempts.append(kwargs)
+        raise OrderRejected("TC 拒绝撤单", broker_message="没有对应的委托信息")
+
+    monkeypatch.setattr(host, "query_order", query_order)
+    monkeypatch.setattr(host, "cancel_order", cancel_order)
+
+    got = host.cancel_order_and_wait(
+        order_id="private-order", visibility_timeout=1.0,
+        settle_timeout=1.0, interval=0.0, call_timeout=3.0,
+    )
+
+    assert got["outcome"] == "timeout"
+    assert len(attempts) == 1
+
+
+def test_cancel_ack_timeout_only_reconciles_and_never_resubmits(tmp_path, monkeypatch):
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    observations = iter([
+        _direct_order(),
+        _direct_order(cdflag="1", kcdflag="0", ztsm="买入@已撤@"),
+    ])
+    attempts = []
+    monkeypatch.setattr(host, "query_order", lambda **kw: next(observations))
+
+    def cancel_order(**kw):
+        attempts.append(kw)
+        raise AckUnknown("撤单回调超时")
+
+    monkeypatch.setattr(host, "cancel_order", cancel_order)
+
+    got = host.cancel_order_and_wait(
+        order_id="private-order", visibility_timeout=1.0,
+        settle_timeout=1.0, interval=0.0, call_timeout=3.0,
+    )
+
+    assert got["outcome"] == "canceled"
+    assert len(attempts) == 1
+
+
+def test_filled_order_is_not_sent_to_cancel(tmp_path, monkeypatch):
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    monkeypatch.setattr(
+        host, "query_order", lambda **kw: _direct_order(cjsl="100", kcdflag="0")
+    )
+    monkeypatch.setattr(
+        host, "cancel_order", lambda **kw: pytest.fail("已成交委托不应再发送撤单"),
+    )
+
+    got = host.cancel_order_and_wait(order_id="private-order")
+
+    assert got["outcome"] == "filled" and got["canceled"] is False
+
+
+def test_partial_fill_followed_by_cancel_keeps_the_filled_quantity(tmp_path, monkeypatch):
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    observations = iter([
+        _direct_order(cjsl="30"),
+        _direct_order(cjsl="30", cdflag="1", kcdflag="0", ztsm="买入@已撤@"),
+    ])
+    monkeypatch.setattr(host, "query_order", lambda **kw: next(observations))
+    monkeypatch.setattr(
+        host, "cancel_order", lambda **kw: {"order_id": kw["order_id"], "message": ""},
+    )
+
+    got = host.cancel_order_and_wait(order_id="private-order", interval=0.0)
+
+    assert got["outcome"] == "canceled"
+    assert got["order"]["status"] == "canceled"
+    assert got["order"]["filled_size"] == "30"
+
+
+def test_cancel_rejects_a_symbol_mismatch_before_sending(tmp_path, monkeypatch):
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    monkeypatch.setattr(host, "query_order", lambda **kw: _direct_order())
+    monkeypatch.setattr(
+        host, "cancel_order", lambda **kw: pytest.fail("代码不匹配时不应发送撤单"),
+    )
+
+    with pytest.raises(ValueError, match="不一致"):
+        host.cancel_order_and_wait(
+            order_id="private-order", symbol="600000.SH", interval=0.0
+        )
+
+
+def test_direct_queries_use_the_dynamically_selected_account(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    monkeypatch.setattr(
+        host,
+        "_current_account",
+        lambda timeout: {"qsid": "private-broker", "zjzh": "private-account"},
+    )
+    calls = []
+
+    def call(method, params, timeout=20.0):
+        calls.append((method, params, timeout))
+        return []
+
+    monkeypatch.setattr(host, "call", call)
+
+    assert host.query_orders(timeout=3.0) == []
+    assert host.query_positions(timeout=3.0) == []
+    assert host.query_assets(timeout=3.0) == []
+    assert calls == [
+        ("DoLevinGN_807", {}, 3.0),
+        (
+            "DoLevinGN_803",
+            {
+                "qsid": "private-broker",
+                "szID": "",
+                "zjzh": "private-account",
+                "zqdm": "",
+            },
+            3.0,
+        ),
+        (
+            "DoLevinGN_830",
+            {"qsid": "private-broker", "szID": "", "zjzh": "private-account"},
+            3.0,
+        ),
+    ]
+
+
+def test_direct_account_guard_does_not_echo_account_numbers(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    monkeypatch.setattr(host, "_current_account", lambda timeout: {"zjzh": "actual-secret"})
+
+    with pytest.raises(ValueError) as got:
+        host.require_account("requested-secret", timeout=3.0)
+
+    message = str(got.value)
+    assert "actual-secret" not in message
+    assert "requested-secret" not in message
+
+
+def test_empty_requested_account_explicitly_accepts_the_selected_default(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    monkeypatch.setattr(
+        host, "_current_account", lambda timeout: pytest.fail("默认账户不需额外查询")
+    )
+
+    host.require_account("", timeout=3.0)
+
+
+@pytest.mark.parametrize("method", ["query_orders", "query_positions", "query_assets"])
+def test_direct_queries_do_not_turn_a_malformed_response_into_an_empty_book(
+    tmp_path, monkeypatch, method
+):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    monkeypatch.setattr(
+        host, "_current_account", lambda timeout: {"qsid": "broker", "zjzh": "account"}
+    )
+    monkeypatch.setattr(host, "call", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(QueryUnavailable):
+        getattr(host, method)(timeout=3.0)

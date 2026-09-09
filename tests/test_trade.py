@@ -71,6 +71,16 @@ def test_create_order_is_201_with_a_row(client):
     assert row["side"] == "buy"
 
 
+def test_optional_security_name_is_accepted_without_changing_the_paper_contract(client):
+    r = client.post(
+        "/v1/orders",
+        json={**ORDER, "security_name": "平安银行"},
+        headers=AUTH,
+    )
+
+    assert r.status_code == 201
+
+
 def test_numbers_go_over_the_wire_as_strings(client):
     """调用方那侧是 Decimal 账本：`Decimal(str)` 精确，`Decimal(float)` 会把误差烘进去。"""
     row = client.post("/v1/orders", json=ORDER, headers=AUTH).get_json()["order"]

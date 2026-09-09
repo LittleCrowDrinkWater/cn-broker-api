@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from cn_broker_api.config import TdxQuantConfig
 from cn_broker_api.drivers.capability import Capability
+from cn_broker_api.drivers.capability_missing import CapabilityMissing
 from cn_broker_api.drivers.desktop_recipe import DesktopRecipe
 from cn_broker_api.drivers.driver_error import DriverError
 from cn_broker_api.drivers.ensure_result import EnsureResult
@@ -20,10 +21,13 @@ from cn_broker_api.drivers.session_state import SessionState
 from cn_broker_api.drivers.tdxquant import health as H
 from cn_broker_api.drivers.tdxquant import login as L
 from cn_broker_api.drivers.tdxquant.client import TdxQuantClient, set_pyplugins
+from cn_broker_api.drivers.tdxquant.hqmp_direct import HqmpDirectSession
+from cn_broker_api.drivers.tdxquant.hqmp_direct_trading import HqmpDirectTrading
 from cn_broker_api.drivers.tdxquant.market import TdxQuantMarketData
 from cn_broker_api.drivers.tdxquant.mcp import McpClient
 from cn_broker_api.drivers.tdxquant.trading import TdxQuantTrading
 from cn_broker_api.state import PasswordVault, SubmitLatch
+from cn_broker_api.trade.query_unavailable import QueryUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +76,33 @@ class TdxQuantDriver:
         set_pyplugins((cfg.tdx_home / "PYPlugins") if cfg.tdx_home else None)
         L.set_mcp_url(cfg.mcp_url)
         L.set_cred_path(cfg.cred_file if cfg.cred_source == "file" else None)
+        self._hqmp_session: Optional[HqmpDirectSession] = None
+        if cfg.transport == "hqmp":
+            if cfg.tdx_home is None or cfg.hqmp_capture is None:
+                raise DriverError("HQMP 直接通道缺少实验副本或抓包模板路径")
+            session = HqmpDirectSession(
+                cfg.tdx_home,
+                cfg.hqmp_port,
+                cfg.hqmp_capture,
+                enable_trade=cfg.hqmp_enable_trade,
+            )
+            try:
+                # 监听必须早于登录接口启动 TC，否则 TC 连不到它的 HQMP 宿主。
+                session.start(launch_tc=False, reuse_tc=cfg.hqmp_reuse_tc)
+            except Exception as exc:  # noqa: BLE001 — 启动失败必须中止整个服务
+                raise DriverError(f"启动直接 HQMP 宿主失败：{exc}") from exc
+            self._hqmp_session = session
 
     # ── 能力 ─────────────────────────────────────────────
     def capabilities(self) -> List[str]:
         """行情那一族只在 mcp 通道上声明：它是照着客户端那个 JSON-RPC 端口写的，
         ctypes 通道上没实现。谎报的表现是调用方过了能力闸然后撞一个看不懂的错。"""
+        if self._hqmp_session is not None:
+            caps = [Capability.SELLABLE_VOLUME, Capability.DESKTOP_LOGIN,
+                    Capability.DESKTOP_DIAG]
+            if self.cfg.hqmp_enable_trade:
+                caps[:0] = [Capability.CREDIT_ORDER, Capability.CANCEL]
+            return caps
         caps = [Capability.CREDIT_ORDER, Capability.CANCEL, Capability.BID_ASK_QUOTE,
                 Capability.SELLABLE_VOLUME, Capability.DESKTOP_LOGIN,
                 Capability.DESKTOP_DIAG, Capability.AUTOCONFIRM_PATCH]
@@ -87,18 +113,35 @@ class TdxQuantDriver:
     def market(self) -> TdxQuantMarketData:
         """行情与静态数据。**不取账户句柄**——实测这些函数都不认账户，
         交易没登也能用（而它们恰恰是交易登录出问题时最需要能看的东西）。"""
+        if self._hqmp_session is not None:
+            raise CapabilityMissing(Capability.MARKET_DATA, self.name)
         return TdxQuantMarketData(self.client())
 
     def client(self) -> McpClient:
         """自检那一侧的最小通道（只回答"通道通不通"，三十行）。"""
         return McpClient(self.cfg.mcp_url)
 
-    def trading(self, *, account: str = "", account_type: str = "STOCK") -> TdxQuantTrading:
+    def trading(self, *, account: str = "", account_type: str = "STOCK") -> Any:
         """这个账户上的交易与查询。
 
          现构现用：底下那条连接是**进程级共享**的，`connect()` 命中同一个身份就短路，
         所以这里没有要缓存的东西。身份含账号与类别（`ConnKey`），换账户才会真重连。
         """
+        if self._hqmp_session is not None:
+            return HqmpDirectTrading(
+                self._hqmp_session,
+                account=account,
+                account_type=account_type,
+                # 调用方可在报单时显式给 security_name；HQMP 本身没有
+                # 已验证的代码到名称查询，所以这里不猜测也不偷连其他行情源。
+                instrument_of=lambda _code: None,
+                call_timeout=max(20.0, self.cfg.cancel_confirm_timeout),
+                cancel_visibility_timeout=self.cfg.cancel_confirm_timeout,
+                cancel_confirm_timeout=self.cfg.cancel_confirm_timeout,
+                cancel_confirm_interval=self.cfg.cancel_confirm_interval,
+                max_order_size=self.cfg.hqmp_max_order_size,
+                max_order_notional=self.cfg.hqmp_max_order_notional,
+            )
         client = TdxQuantClient(
             str(self.cfg.tdx_home / "PYPlugins") if self.cfg.tdx_home else None,
             account=account, account_type=account_type,
@@ -168,6 +211,23 @@ class TdxQuantDriver:
     # ── 自检 ─────────────────────────────────────────────
     def health(self, *, account: str = "", account_type: str = "STOCK",
                need_times: Sequence[Tuple[int, int]] = ()) -> Dict[str, Any]:
+        if self._hqmp_session is not None:
+            ready, detail = self._direct_channel_probe(account)
+            checks = [
+                {"key": "transport", "name": "HQMP 宿主与 TC", "ok": ready,
+                 "warn": False, "detail": detail},
+                {"key": "account", "name": "交易账号登录", "ok": ready,
+                 "warn": False, "detail": detail},
+                {"key": "trade_gate", "name": "HQMP 交易闸", "ok": True,
+                 "warn": not self.cfg.hqmp_enable_trade,
+                 "detail": ("已显式打开，仍受单笔数量和金额上限保护"
+                            if self.cfg.hqmp_enable_trade
+                            else "当前只读，不接受报单或撤单")},
+                {"key": "autoconfirm", "name": "页面自动确认", "ok": True,
+                 "warn": False, "detail": "直接 HQMP 不经过页面确认队列，无需补丁"},
+            ]
+            return {"ok": ready, "checks": checks,
+                    "message": "直接 HQMP 已就绪" if ready else detail}
         h = H.check_trade_channel(self.client(), account=account,
                                   account_type=account_type, need_times=need_times,
                                   probe_symbol=H.DEFAULT_PROBE_SYMBOL)
@@ -177,6 +237,18 @@ class TdxQuantDriver:
             "checks": [{"key": c.key, "name": c.name, "ok": c.ok,
                         "warn": c.warn, "detail": c.detail} for c in h.checks],
         }
+
+    def _direct_channel_probe(self, account: str) -> Tuple[bool, str]:
+        assert self._hqmp_session is not None
+        timeout = min(5.0, max(1.0, self.cfg.cancel_confirm_timeout))
+        ready, detail = self._hqmp_session.channel_ok(timeout)
+        if not ready:
+            return False, detail
+        try:
+            self._hqmp_session.require_account(account, timeout=timeout)
+        except (QueryUnavailable, ValueError) as exc:
+            return False, str(exc)
+        return True, detail
 
     # ── 登录 ─────────────────────────────────────────────
     def _resolve_cred(self, *, password: Optional[str], account: str,
@@ -204,6 +276,15 @@ class TdxQuantDriver:
                          account: str = "", account_type: str = "STOCK",
                          start: bool = True, minimize: bool = True,
                          wait_seconds: int = 240) -> EnsureResult:
+        if self._hqmp_session is not None:
+            return self._ensure_direct_logged_in(
+                password=password,
+                account=account,
+                account_type=account_type,
+                start=start,
+                minimize=minimize,
+                wait_seconds=wait_seconds,
+            )
         cred = self._resolve_cred(password=password, account=account,
                                   account_type=account_type)
         acc = str(cred.get("account") or "")
@@ -227,9 +308,45 @@ class TdxQuantDriver:
         self.latch.settle(acc, ok)
         return EnsureResult(ok=ok, detail=detail, acted=True)
 
+    def _ensure_direct_logged_in(self, *, password: Optional[str], account: str,
+                                 account_type: str, start: bool, minimize: bool,
+                                 wait_seconds: int) -> EnsureResult:
+        """复用桌面登录机制，但只以 HQMP 账户和资产查询作为成功判据。"""
+        assert self._hqmp_session is not None
+        # 已就绪时不要读取或解密凭据；只读探测足以证明当前请求的账户可用。
+        ready, detail = self._direct_channel_probe(account)
+        if ready:
+            if account:
+                # 前一次登录若在 HQMP 注册前超时，闩已保守记作失败；后来确认同一账户
+                # 已就绪时必须清零，否则连续几次慢注册会把正确密码永久锁住。
+                self.latch.settle(account, True)
+            return EnsureResult(ok=True, acted=False, detail=detail)
+
+        cred = self._resolve_cred(
+            password=password, account=account, account_type=account_type
+        )
+        expected_account = str(cred.get("account") or "")
+
+        self.latch.claim(expected_account)
+        try:
+            ok, detail = L.ensure_logged_in(
+                cred,
+                wait=wait_seconds,
+                start=start,
+                minimize=minimize,
+                required_processes=self._desktop_recipe.processes,
+                channel_probe=lambda _: self._direct_channel_probe(expected_account),
+            )
+        except SystemExit as exc:
+            raise DriverError(f"起实验 TC 失败：{exc}") from exc
+        self.latch.settle(expected_account, ok)
+        return EnsureResult(ok=ok, detail=detail, acted=True)
+
     def session_status(self, *, account: str = "",
                        account_type: str = "STOCK") -> Dict[str, Any]:
         """只观察登录状态；识别不充分时不猜成“未登录”。"""
+        if self._hqmp_session is not None:
+            return self._direct_session_status(account)
         cred = {"account": account, "account_type": account_type}
         ok, _detail = L.channel_ok(cred)
         if ok:
@@ -272,6 +389,49 @@ class TdxQuantDriver:
             "ready": False,
             "detail": "交易内核运行中，但账户与资产查询未通过，且没有明确的登录窗口",
         }
+
+    def _direct_session_status(self, account: str) -> Dict[str, Any]:
+        ready, detail = self._direct_channel_probe(account)
+        if ready:
+            return {"state": SessionState.READY.value, "ready": True, "detail": detail}
+        try:
+            pids = L._target_pids(self._desktop_recipe.processes)
+            if "TC.exe" not in pids.values():
+                return {
+                    "state": SessionState.LOGIN_REQUIRED.value,
+                    "ready": False,
+                    "detail": "实验交易内核 TC.exe 未启动；可调用登录接口",
+                }
+            dialog = L.find_login_dialog(pids)
+            if dialog is not None:
+                kind = L.classify(L.snapshot(dialog))
+                if kind == "trade":
+                    return {
+                        "state": SessionState.LOGIN_REQUIRED.value,
+                        "ready": False,
+                        "detail": "已识别到实验 TC 交易登录窗口；可调用登录接口",
+                    }
+                return {
+                    "state": SessionState.MANUAL_ACTION_REQUIRED.value,
+                    "ready": False,
+                    "detail": f"检测到尚未识别的实验 TC 窗口类型：{kind}",
+                }
+        except Exception as exc:  # noqa: BLE001 — 只读状态失败不能猜成未登录
+            return {
+                "state": SessionState.CHANNEL_UNAVAILABLE.value,
+                "ready": False,
+                "detail": f"检查实验 TC 登录窗口失败：{type(exc).__name__}",
+            }
+        return {
+            "state": SessionState.CHANNEL_UNAVAILABLE.value,
+            "ready": False,
+            "detail": detail,
+        }
+
+    def close(self) -> None:
+        """停止由本驱动托管的 HQMP 监听；普通通道无需处理。"""
+        if self._hqmp_session is not None:
+            self._hqmp_session.stop()
 
     # ── 页面补丁 ─────────────────────────────────────────
     def autoconfirm_status(self, *, account: str = "",
