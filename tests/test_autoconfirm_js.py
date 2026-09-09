@@ -96,4 +96,4 @@ def test_the_badge_says_how_many_were_left_behind(tmp_path):
     放宽——早上的陈旧信号在下午被顺手发出去是队列形态里最危险的一格），所以只能让人看见。
     """
     r = _run("gates", tmp_path)
-    assert "漏" in r["badge"], f"徽标没报漏笔：{r['badge']!r}"
+    assert "漏 1 笔" in r["badge"], f"徽标没准确报告跨午夜漏笔：{r['badge']!r}"

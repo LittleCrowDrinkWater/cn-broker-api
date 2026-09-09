@@ -18,19 +18,34 @@ const vm = require('vm');
 
 const scriptPath = process.argv[2];
 const scenario = process.argv[3];
+const REAL_DATE = Date;
+const NOW_MS = new REAL_DATE(2026, 8, 9, 0, 8, 0).getTime();
+
+class FixedDate extends REAL_DATE {
+  constructor(...args) { super(...(args.length ? args : [NOW_MS])); }
+  static now() { return NOW_MS; }
+}
 
 function hms(offsetSec) {
-  const d = new Date(Date.now() - offsetSec * 1000);
+  const d = new FixedDate(FixedDate.now() - offsetSec * 1000);
   const p = (n) => String(n).padStart(2, '0');
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+
+function day(offsetSec) {
+  const d = new FixedDate(FixedDate.now() - offsetSec * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+}
+
+function stamp(offsetSec) { return { DAY: day(offsetSec), TIME: hms(offsetSec) }; }
 
 /** 一行队列信号。`ageSec` ＝ 这笔是多久以前进队列的。 */
 function row(reqId, extra) {
   return Object.assign({
     ID: reqId, ZH: '327299901850', CODE: '301004', NAME: '嘉益股份',
     BS: '1', VOL: '500', REQ_ID: String(reqId), STATE: '0',
-    DAY: '20260901', TIME: hms(0), PRICE: '35.74',
+    ...stamp(0), PRICE: '35.74',
   }, extra || {});
 }
 
@@ -82,8 +97,9 @@ const SCENARIOS = {
            row(3, { PRICE: '' }),                              // 市价单
            row(4, { VOL: '200000' }),                          // 超股数上限
            row(5, { VOL: '9000', PRICE: '35.74' }),            // 超金额上限
-           row(6, { TIME: hms(600) }),                         // 陈旧信号
-           row(7, { STATE: '1' })],                            // 已发送的历史行
+           row(6, stamp(600)),                                 // 跨午夜的陈旧信号
+           row(7, { STATE: '1' }),                             // 已发送的历史行
+           row(8, stamp(-60))],                                // 未来信号
     runMs: 800,
     expectSent: ['1'],
   },
@@ -113,7 +129,7 @@ const sandbox = {
     getItem: (k) => (k in store ? store[k] : null),
     setItem: (k, v) => { store[k] = String(v); },
   },
-  setInterval, setTimeout, clearInterval, Date, JSON, String, Number, Math, console,
+  setInterval, setTimeout, clearInterval, Date: FixedDate, JSON, String, Number, Math, console,
 };
 sandbox.window.localStorage = sandbox.localStorage;
 

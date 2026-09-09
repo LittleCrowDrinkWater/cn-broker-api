@@ -116,6 +116,23 @@ INJECT = MARK_BEGIN + """
     var m = /^(\\d{1,2}):(\\d{2}):(\\d{2})$/.exec(String(s || "").trim());
     return m ? (+m[1]) * 3600 + (+m[2]) * 60 + (+m[3]) : null;
   }
+  function rowAgeSec(r) {
+    var dm = /^(\\d{4})(\\d{2})(\\d{2})$/.exec(String(r.DAY || "").trim());
+    var tm = /^(\\d{1,2}):(\\d{2}):(\\d{2})$/.exec(String(r.TIME || "").trim());
+    if (dm && tm) {
+      var stamped = new Date(+dm[1], +dm[2] - 1, +dm[3], +tm[1], +tm[2], +tm[3]);
+      // Date 会把 2026-02-31 之类的非法日期自动滚到三月，必须反查每个分量。
+      if (stamped.getFullYear() === +dm[1] && stamped.getMonth() === +dm[2] - 1
+          && stamped.getDate() === +dm[3] && stamped.getHours() === +tm[1]
+          && stamped.getMinutes() === +tm[2] && stamped.getSeconds() === +tm[3]) {
+        return Math.floor((Date.now() - stamped.getTime()) / 1000);
+      }
+      return null;
+    }
+    // 兼容尚未提供 DAY 的旧页面；这条退路无法判断跨午夜，因此负数仍按未来信号处理。
+    var t = hms2sec(r.TIME);
+    return t === null ? null : nowSec() - t;
+  }
   function inHours() {
     var t = nowSec(), hs = C.hours || [];
     for (var i = 0; i < hs.length; i++) {
@@ -191,8 +208,8 @@ INJECT = MARK_BEGIN + """
       var px = Number(r.PRICE);                                       // 市价单这里是 NaN
       if (!(px > 0)) { return; }                                      // 我们只发限价单
       if (C.maxNotional && vol * px > C.maxNotional) { return; }
-      var t = hms2sec(r.TIME), age = t === null ? -1 : nowSec() - t;
-      if (age < 0) { return; }
+      var age = rowAgeSec(r);
+      if (age === null || age < 0) { return; }
       if (age > (C.maxAgeSec || 90)) {
         // 该发、没发出去、行龄闸又已经过了 ⇒ 自动这侧再也不会碰它（这条闸不能为了重试
         // 放宽，早上的陈旧信号在下午被顺手发出去是队列形态里最危险的一格）。只能让人看见。
