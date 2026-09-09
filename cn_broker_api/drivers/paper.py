@@ -15,6 +15,7 @@ from cn_broker_api.drivers.desktop_recipe import DesktopRecipe
 from cn_broker_api.drivers.ensure_result import EnsureResult
 from cn_broker_api.drivers.paper_market import PaperMarketData
 from cn_broker_api.drivers.paper_trading import PaperTrading
+from cn_broker_api.drivers.session_state import SessionState
 
 
 class PaperDriver:
@@ -75,3 +76,11 @@ class PaperDriver:
         self.ensure_calls += 1
         return EnsureResult(ok=True, acted=False,
                             detail="纸面驱动：无需登录（也没有客户端可登）")
+
+    def session_status(self, *, account: str = "",
+                       account_type: str = "STOCK") -> Dict[str, Any]:
+        return {
+            "state": SessionState.READY.value,
+            "ready": True,
+            "detail": "纸面驱动：无需登录（没有真实交易会话）",
+        }

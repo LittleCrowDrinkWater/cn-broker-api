@@ -19,7 +19,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from cn_broker_api.stdio import init_stdio
 
@@ -563,7 +563,10 @@ def _do_trade_login(dlg: int, ctls: List[Ctl], cred: dict) -> bool:
 
 def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
                      guest: bool = False, minimize: bool = True,
-                     required_processes: Sequence[str] = PROCS) -> Tuple[bool, str]:
+                     required_processes: Sequence[str] = PROCS,
+                     channel_probe: Optional[
+                         Callable[[dict], Tuple[bool, str]]
+                     ] = None) -> Tuple[bool, str]:
     """把"交易通道可用"这件事做成。返回 (成不成, 一句话)。
 
      **状态驱动，不是弹框驱动**：目标是"通道可用"，不是"把某个框填了"。客户端自己开了
@@ -575,6 +578,7 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
     `NewTc/TC.exe`（交易）。 后者**不会自己起来**——客户端的自动登录只登行情，交易模块要人
     在界面上点【交易】才拉起，缺它的表现是"既没登上、也没有登录框"的僵局。
 
+     `channel_probe` 允许直接 HQMP 复用这套窗口操作，同时用自己的账户/资产调用判定成功。
      **失败绝不重试**：密码连续输错会被券商锁一天。失败就如实返回，让上层去告警。
     """
     if not _WIN:
@@ -603,9 +607,11 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
 
     t_end = time.time() + wait
     done_client_gate = False
+    submitted_trade_login = False
     acted = False                 # 这一趟有没有真动手（过门/填密码）
+    probe = channel_probe or channel_ok
     while True:
-        ok, detail = channel_ok(cred)
+        ok, detail = probe(cred)
         if ok:
             # 本来就登着就不动窗口（多半是人正在看它），只有这一趟真登过才收起来。
             if minimize and acted:
@@ -626,9 +632,12 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
                     if not done_client_gate:
                         return False, "过不了客户端(行情)登录那道门"
             elif kind == "trade":
-                acted = True
-                if not _do_trade_login(dlg, ctls, cred):
-                    return False, "交易登录没做成（认不准或密码没填对 ⇒ 已中止，未提交）"
+                # 登录框在柜台处理期间可能继续显示。只观察通道是否变绿，绝不能再次提交密码。
+                if not submitted_trade_login:
+                    acted = True
+                    if not _do_trade_login(dlg, ctls, cred):
+                        return False, "交易登录没做成（认不准或密码没填对 ⇒ 已中止，未提交）"
+                    submitted_trade_login = True
             else:
                 return False, "认不出这是哪道门 ⇒ 中止"
 

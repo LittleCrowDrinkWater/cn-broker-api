@@ -236,6 +236,34 @@ def test_probe_replays_bootstrap_with_a_dynamically_selected_account(tmp_path, m
     ]
 
 
+def test_channel_ok_requires_registration(tmp_path):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+
+    assert host.channel_ok() == (False, "TC 尚未注册到直接 HQMP 宿主")
+
+
+def test_channel_ok_uses_account_and_asset_fields(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    host._client_registered.set()
+    host._client_token = "route"
+    account = {"qsid": "broker", "zjzh": "account"}
+    monkeypatch.setattr(host, "_initialize_account", lambda timeout: ([account], account))
+    calls = []
+
+    def call(method, params, timeout=20.0):
+        calls.append((method, params, timeout))
+        return [{"keyong": "0.00"}] if method == "DoLevinGN_830" else []
+
+    monkeypatch.setattr(host, "call", call)
+
+    assert host.channel_ok(3.0) == (True, "HQMP 账户和资产查询已通过")
+    assert calls[-1] == (
+        "DoLevinGN_830",
+        {"qsid": "broker", "szID": "", "zjzh": "account"},
+        3.0,
+    )
+
+
 def test_builds_the_observed_collateral_buy_contract(tmp_path, monkeypatch):
     constants = tmp_path / "PYPlugins" / "sys"
     constants.mkdir(parents=True)

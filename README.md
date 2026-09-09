@@ -339,13 +339,15 @@ powershell -ExecutionPolicy Bypass -File .\install_task.ps1 -Uninstall
 其中公式引擎、往客户端界面写回、我们自有更好来源的财务统计都不投影出来——
 **暴露的是要用的，不是能做的**。
 
-当前契约版本 **4**。调用方启动时校 `/v1/meta` 的 `contract`，不匹配**直接拒跑，不做兼容适配**。
+当前契约版本 **5**。调用方启动时校 `/v1/meta` 的 `contract`，不匹配**直接拒跑，不做兼容适配**。
 ⇒ 升版本要两侧一起发：本服务重启之后，调用方那侧的 `CONTRACT_VERSION` 不改就一次都调不通。
 
 - v3 相对 v2 多一个字段：委托行的 `order_time`（报单时刻 `HHMMSS`，见下方「委托行的 `order_time`」）。
 - v4 相对 v3 放宽一个字段的类型：委托行的 `side` **可以是 `null`＝这一笔的方向柜台不给**
   （见下方「已撤单的 `side`」）。⭐ 类型变了就必须升版本：v3 的调用方对 `null` 的处置是
   `or "buy"`，**那不是少一个字段，是记反一笔账**。
+- v5 新增 `GET /v1/session/status`；交易账户明确未登录时返回
+  `503 + error=broker_login_required`，并给出登录入口 `/v1/session/ensure`。
 
 ```
 运维
@@ -353,6 +355,7 @@ GET    /v1/meta                    契约版本 / 驱动名 / 能力清单
 GET    /v1/health                  结构化检查项（缓存 + 年龄，便宜）
 POST   /v1/health/refresh          强制重探（要连客户端，只在动手前打）
 POST   /v1/session/ensure          把客户端弄到「交易通道可用」。幂等、单飞
+GET    /v1/session/status          只观察登录状态，不启动客户端或提交密码
 GET    /v1/jobs/{id}               上一步的进度与终态
 GET    /v1/state                   诊断页要的：额度、上次登录、看门狗、当前生效配置
 GET    /                           诊断页（单文件，无构建步骤）

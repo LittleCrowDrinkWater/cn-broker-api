@@ -21,8 +21,10 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from flask import jsonify, request
 
 from cn_broker_api.api.context import ApiContext
+from cn_broker_api.drivers.broker_login_required import BrokerLoginRequired
 from cn_broker_api.drivers.capability_missing import CapabilityMissing
 from cn_broker_api.drivers.driver_error import DriverError
+from cn_broker_api.drivers.session_state import SessionState
 from cn_broker_api.queue_timeout import QueueTimeout
 from cn_broker_api.trade.ack_unknown import AckUnknown
 from cn_broker_api.trade.order_pending_confirm import OrderPendingConfirm
@@ -61,6 +63,14 @@ def maps_failures(fn: Callable) -> Callable:
                            broker_message=e.broker_message), 409
         except CapabilityMissing as e:
             return jsonify(error="capability_missing", message=str(e)), 501
+        except BrokerLoginRequired as e:
+            return jsonify(
+                error="broker_login_required",
+                message=str(e),
+                session_state=e.session_state,
+                login_endpoint="/v1/session/ensure",
+                retryable_after_login=True,
+            ), 503
         except (AckUnknown, QueueTimeout) as e:
             return jsonify(error="ack_timeout", message=str(e)), 504
         except DriverError as e:
@@ -86,5 +96,17 @@ def in_queue(ctx: ApiContext, account: str, account_type: str, what: str,
     队列的键含账户类别：同一个账号在 STOCK 与 CREDIT 上是两条连接，混成一个键会让
     「同账户接着做完」这条规则失效。
     """
-    trading = ctx.driver.trading(account=account, account_type=account_type)
-    return ctx.queue.submit(f"{account_type}:{account}", lambda: work(trading), what=what)
+    def invoke() -> Any:
+        status_fn = getattr(ctx.driver, "session_status", None)
+        if status_fn is not None:
+            status = status_fn(account=account, account_type=account_type)
+            state = str(status.get("state") or SessionState.CHANNEL_UNAVAILABLE.value)
+            detail = str(status.get("detail") or "交易会话不可用")
+            if state == SessionState.LOGIN_REQUIRED.value:
+                raise BrokerLoginRequired(detail)
+            if state != SessionState.READY.value:
+                raise DriverError(f"交易会话状态 {state}：{detail}")
+        trading = ctx.driver.trading(account=account, account_type=account_type)
+        return work(trading)
+
+    return ctx.queue.submit(f"{account_type}:{account}", invoke, what=what)

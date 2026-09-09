@@ -49,6 +49,7 @@ READ_ONLY_METHODS = frozenset({
     "DoLevinGN_830",
 })
 TRADE_METHODS = frozenset({"DoLevinGN_909", "DoLevinGN_808"})
+DIRECT_MONEY_FIELDS = frozenset({"keyong", "nmoney", "yu", "zican", "ztzj"})
 
 
 @dataclass
@@ -462,6 +463,36 @@ class HqmpDirectSession:
         account = _selected_account(accounts)
         self._account = account
         return accounts, account
+
+    def channel_ok(self, timeout: float = 5.0) -> tuple[bool, str]:
+        """用直接 HQMP 的账户与资产结果判断交易登录是否真正可用。"""
+        if not self._client_registered.is_set() or self._client_token is None:
+            return False, "TC 尚未注册到直接 HQMP 宿主"
+        try:
+            _, account = self._initialize_account(timeout)
+            for flag in ("5", "6"):
+                self.call(
+                    "DoLevinGN_809",
+                    {"flag": flag, "setcode": "0", "qsid": "0", "zqdm": "", "zjzh": ""},
+                    timeout,
+                )
+            qsid = str(account.get("qsid", ""))
+            account_id = str(account.get("zjzh", ""))
+            if not qsid or not account_id:
+                return False, "HQMP 账户结果缺少查询所需字段"
+            assets = self.call(
+                "DoLevinGN_830",
+                {"qsid": qsid, "szID": "", "zjzh": account_id},
+                timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — 登录过程中未就绪是被观察状态
+            return False, f"HQMP 账户与资产校验未通过：{type(exc).__name__}"
+        if not isinstance(assets, list) or not any(
+            isinstance(row, dict) and DIRECT_MONEY_FIELDS.intersection(row)
+            for row in assets
+        ):
+            return False, "HQMP 资产查询没有返回资金字段"
+        return True, "HQMP 账户和资产查询已通过"
 
     def probe(self, timeout: float = 20.0) -> dict[str, int]:
         """复现已成功的初始化序列，只返回账户、持仓、资产和委托条数。"""

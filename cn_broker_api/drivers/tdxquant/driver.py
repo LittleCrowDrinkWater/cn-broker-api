@@ -16,6 +16,7 @@ from cn_broker_api.drivers.capability import Capability
 from cn_broker_api.drivers.desktop_recipe import DesktopRecipe
 from cn_broker_api.drivers.driver_error import DriverError
 from cn_broker_api.drivers.ensure_result import EnsureResult
+from cn_broker_api.drivers.session_state import SessionState
 from cn_broker_api.drivers.tdxquant import health as H
 from cn_broker_api.drivers.tdxquant import login as L
 from cn_broker_api.drivers.tdxquant.client import TdxQuantClient, set_pyplugins
@@ -225,6 +226,52 @@ class TdxQuantDriver:
         # 必须结算：不调的表现是「登录成功了但连续失败计数一直涨」，几天后那个闸会自己关死。
         self.latch.settle(acc, ok)
         return EnsureResult(ok=ok, detail=detail, acted=True)
+
+    def session_status(self, *, account: str = "",
+                       account_type: str = "STOCK") -> Dict[str, Any]:
+        """只观察登录状态；识别不充分时不猜成“未登录”。"""
+        cred = {"account": account, "account_type": account_type}
+        ok, _detail = L.channel_ok(cred)
+        if ok:
+            return {
+                "state": SessionState.READY.value,
+                "ready": True,
+                "detail": "交易账户和资产查询已通过",
+            }
+
+        try:
+            pids = L._target_pids(self._desktop_recipe.processes)
+            if "TC.exe" not in pids.values():
+                return {
+                    "state": SessionState.LOGIN_REQUIRED.value,
+                    "ready": False,
+                    "detail": "交易内核 TC.exe 未启动；可调用登录接口启动并登录",
+                }
+            dialog = L.find_login_dialog(pids)
+            if dialog is not None:
+                kind = L.classify(L.snapshot(dialog))
+                if kind == "trade":
+                    return {
+                        "state": SessionState.LOGIN_REQUIRED.value,
+                        "ready": False,
+                        "detail": "已识别到交易登录窗口；可调用登录接口完成登录",
+                    }
+                return {
+                    "state": SessionState.MANUAL_ACTION_REQUIRED.value,
+                    "ready": False,
+                    "detail": f"检测到尚未识别的客户端窗口类型：{kind}",
+                }
+        except Exception as exc:  # noqa: BLE001 — 状态观察必须返回未知，不能猜成未登录
+            return {
+                "state": SessionState.CHANNEL_UNAVAILABLE.value,
+                "ready": False,
+                "detail": f"检查交易登录窗口失败：{type(exc).__name__}",
+            }
+        return {
+            "state": SessionState.CHANNEL_UNAVAILABLE.value,
+            "ready": False,
+            "detail": "交易内核运行中，但账户与资产查询未通过，且没有明确的登录窗口",
+        }
 
     # ── 页面补丁 ─────────────────────────────────────────
     def autoconfirm_status(self, *, account: str = "",

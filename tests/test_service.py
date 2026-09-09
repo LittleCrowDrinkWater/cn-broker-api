@@ -14,6 +14,7 @@ from cn_broker_api.drivers.capability import Capability
 from cn_broker_api.drivers.capability_missing import CapabilityMissing
 from cn_broker_api.drivers.paper import PaperDriver
 from cn_broker_api.http_app import create_app
+from cn_broker_api.singleflight import SingleFlight
 from cn_broker_api.state import PasswordVault, SubmitBlocked, SubmitLatch
 
 TOKEN = "test-token"
@@ -148,6 +149,59 @@ def test_job_lookup_after_ensure(client):
     job = client.post("/v1/session/ensure", json={}, headers=AUTH).get_json()["job_id"]
     got = client.get(f"/v1/jobs/{job}", headers=AUTH).get_json()
     assert got["state"] == "done" and got["ok"] is True
+
+
+def test_session_status_is_observational(client):
+    body = client.get("/v1/session/status", headers=AUTH).get_json()
+    assert body == {
+        "state": "READY",
+        "ready": True,
+        "detail": "纸面驱动：无需登录（没有真实交易会话）",
+    }
+
+
+def test_session_status_reports_the_running_login_job(tmp_path):
+    cfg = Config(server=ServerConfig(port=17710, state_dir=tmp_path),
+                 health=HealthConfig(cache_seconds=30),
+                 tdxquant=TdxQuantConfig(), driver="paper")
+    flight = SingleFlight()
+    job_id, mine = flight.start()
+    assert mine is True
+    app = create_app(cfg, PaperDriver(), token=TOKEN, flight=flight)
+
+    body = app.test_client().get("/v1/session/status", headers=AUTH).get_json()
+
+    assert body == {
+        "state": "LOGIN_IN_PROGRESS",
+        "ready": False,
+        "detail": "登录任务正在执行",
+        "job_id": job_id,
+    }
+
+
+def test_trade_returns_a_machine_readable_login_route(tmp_path):
+    class LoggedOutPaperDriver(PaperDriver):
+        def session_status(self, *, account="", account_type="STOCK"):
+            return {
+                "state": "LOGIN_REQUIRED",
+                "ready": False,
+                "detail": "交易账户尚未登录",
+            }
+
+    cfg = Config(server=ServerConfig(port=17710, state_dir=tmp_path),
+                 health=HealthConfig(cache_seconds=30),
+                 tdxquant=TdxQuantConfig(), driver="paper")
+    app = create_app(cfg, LoggedOutPaperDriver(), token=TOKEN)
+    response = app.test_client().get("/v1/account", headers=AUTH)
+
+    assert response.status_code == 503
+    assert response.get_json() == {
+        "error": "broker_login_required",
+        "message": "交易账户尚未登录",
+        "session_state": "LOGIN_REQUIRED",
+        "login_endpoint": "/v1/session/ensure",
+        "retryable_after_login": True,
+    }
 
 
 def test_unknown_job_is_404(client):

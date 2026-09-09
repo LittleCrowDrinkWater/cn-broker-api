@@ -12,8 +12,10 @@ from flask import Flask, jsonify, request
 from cn_broker_api.api.context import ApiContext
 from cn_broker_api.api.probe import cache_key as _cache_key
 from cn_broker_api.api.probe import probe
+from cn_broker_api.api.trade_call import maps_failures
 from cn_broker_api.drivers.capability_missing import CapabilityMissing
 from cn_broker_api.drivers.driver_error import DriverError
+from cn_broker_api.drivers.session_state import SessionState
 from cn_broker_api.state import SubmitBlocked
 
 logger = logging.getLogger(__name__)
@@ -24,6 +26,27 @@ def register(app: Flask, ctx: ApiContext) -> None:
 
     def _probe():  # noqa: ANN202
         return probe(driver)
+
+    @app.get("/v1/session/status")
+    @maps_failures
+    def session_status():  # noqa: ANN202
+        """只观察交易会话，不启动客户端，也不提交密码。"""
+        current = flight.current()
+        if current is not None:
+            return jsonify(
+                state=SessionState.LOGIN_IN_PROGRESS.value,
+                ready=False,
+                detail="登录任务正在执行",
+                job_id=current["id"],
+            ), 200
+        account = str(request.args.get("account") or "").strip()
+        account_type = str(request.args.get("account_type") or "STOCK").strip().upper()
+        status = ctx.queue.submit(
+            f"{account_type}:{account}",
+            lambda: driver.session_status(account=account, account_type=account_type),
+            what="查交易会话",
+        )
+        return jsonify(status), 200
 
     @app.post("/v1/session/ensure")
     def session_ensure():  # noqa: ANN202

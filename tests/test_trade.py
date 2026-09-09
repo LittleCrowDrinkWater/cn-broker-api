@@ -228,13 +228,14 @@ def test_instrument_margin_target_may_be_null(client):
 
 # ---- 契约版本 ----
 
-def test_contract_says_four_since_side_can_be_unknown(client):
+def test_contract_says_five_since_session_state_is_explicit(client):
     """字段一变版本就得动，否则调用方校版本这件事就白做了。
 
     v2 ＝交易端点上线，v3 ＝委托行多了 `order_time`，v4 ＝委托行的 `side` 可以是 null
-    （已撤单柜台不给方向）。这条用例的作用是**逼着改版本号**：两侧靠这个整数硬校验，
+    （已撤单柜台不给方向），v5 ＝新增明确的会话状态和 `broker_login_required` 错误语义。
+    这条用例的作用是**逼着改版本号**：两侧靠这个整数硬校验，
     忘了升就会在调用方那侧凌晨三点静默读到一个恒为 null 的字段。
     ⭐ v4 这次尤其要升：老调用方对 null 的处置是 `or "buy"`，**静默折成买入**——
     那不是少一个字段，是记反一笔账。
     """
-    assert client.get("/v1/meta", headers=AUTH).get_json()["contract"] == 4
+    assert client.get("/v1/meta", headers=AUTH).get_json()["contract"] == 5

@@ -47,3 +47,11 @@ class SingleFlight:
     def get(self, job_id: str) -> Optional[Dict[str, Any]]:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def current(self) -> Optional[Dict[str, Any]]:
+        """返回当前运行任务的快照；只观察，不创建新任务。"""
+        with self._lock:
+            if self._current is None:
+                return None
+            job = self._jobs.get(self._current)
+            return dict(job) if job is not None else None

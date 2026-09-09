@@ -55,6 +55,11 @@ class Driver(Protocol):
         """
         ...
 
+    def session_status(self, *, account: str = "",
+                       account_type: str = "STOCK") -> Dict[str, Any]:
+        """返回明确的交易登录状态；只观察，不启动进程或提交密码。"""
+        ...
+
 
 def require(driver: Driver, capability: str) -> None:
     """要一个能力，没有就明确失败。**调用点写一行，不要各自 if。**"""
