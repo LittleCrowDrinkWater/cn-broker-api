@@ -182,6 +182,20 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 自动登录尚未使用真实凭证做冷启动验收。原因是当前未配置仓库外凭证文件，而且密码提交具有账户锁定风险；
 后续真机验证必须在操作者明确授权、凭证由仓库外提供且失败阈值生效的条件下进行。
 
+### 代码、验证与远端快照
+
+- 当前开发分支：`feature/tdx-headless-trade`；代码基线已与远端同名分支同步；
+- `3e21491 fix(tdxquant): handle stale signals across midnight`：完成自动确认脚本跨午夜修复；
+- `22c08d0 feat(tdxquant): expose explicit session state`：完成会话状态、未登录错误契约、
+  直接 HQMP 就绪探针和自动登录原型；
+- 全量测试结果：`251 passed`；`python -m compileall -q cn_broker_api tests` 通过；
+  `git diff --check` 通过，仅有 Git 提示工作区未来可能按 Windows 配置把 LF 转为 CRLF；
+- 本轮验证没有读取或提交真实交易密码，没有调用真实报单或撤单方法，也没有改变账户、持仓或委托状态。
+
+当前可以明确做到：调用方可先查询会话状态；业务请求遇到确切未登录证据时可收到稳定、机器可读的
+`broker_login_required`，再调用 `/v1/session/ensure`。当前还不能宣称做到的是：直接 HQMP 从冷启动到
+自动登录、自动重连并经正式 HTTP 交易端点长期无人值守运行；这部分仍缺真机验收和正式驱动接入。
+
 ### 下一步待办
 
 1. **P0（已完成）：修复自动确认脚本的跨午夜时间判断**
