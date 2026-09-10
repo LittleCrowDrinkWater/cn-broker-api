@@ -59,7 +59,7 @@ def _client(tmp_path):
     return driver, create_app(cfg, driver, token="token").test_client()
 
 
-def test_security_name_reaches_the_direct_hqmp_adapter(tmp_path):
+def test_request_security_name_cannot_override_the_symbol_identity(tmp_path):
     driver, client = _client(tmp_path)
 
     response = client.post(
@@ -68,7 +68,7 @@ def test_security_name_reaches_the_direct_hqmp_adapter(tmp_path):
         json={
             "account_type": "CREDIT",
             "symbol": "000001.SZ",
-            "security_name": "平安银行",
+            "security_name": "错误的名称",
             "side": "buy",
             "size": 100,
             "price": 10.61,
@@ -77,10 +77,11 @@ def test_security_name_reaches_the_direct_hqmp_adapter(tmp_path):
     )
 
     assert response.status_code == 201
-    assert driver.session.placed[0]["security_name"] == "平安银行"
+    assert driver.session.placed[0]["symbol"] == "000001.SZ"
+    assert driver.session.placed[0]["security_name"] == ""
 
 
-def test_missing_security_name_is_400_and_sends_nothing(tmp_path):
+def test_missing_security_name_is_accepted_and_symbol_remains_authoritative(tmp_path):
     driver, client = _client(tmp_path)
 
     response = client.post(
@@ -95,6 +96,6 @@ def test_missing_security_name_is_400_and_sends_nothing(tmp_path):
         },
     )
 
-    assert response.status_code == 400
-    assert response.get_json()["error"] == "bad_request"
-    assert driver.session.placed == []
+    assert response.status_code == 201
+    assert driver.session.placed[0]["symbol"] == "000001.SZ"
+    assert driver.session.placed[0]["security_name"] == ""

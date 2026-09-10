@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -30,6 +31,9 @@ from cn_broker_api.state import PasswordVault, SubmitLatch
 from cn_broker_api.trade.query_unavailable import QueryUnavailable
 
 logger = logging.getLogger(__name__)
+
+_DIRECT_REGISTRATION_RETRY_SECONDS = 10.0
+_DIRECT_REGISTRATION_RETRY_INTERVAL = 0.5
 
 #: 这一版客户端的桌面配方。**数据，不是代码**（见 `drivers/base.py` 那段）：
 #: 换一个更精简的客户端版本，多半是照着写一份新的配方，而不是改机制。
@@ -132,8 +136,8 @@ class TdxQuantDriver:
                 self._hqmp_session,
                 account=account,
                 account_type=account_type,
-                # 调用方可在报单时显式给 security_name；HQMP 本身没有
-                # 已验证的代码到名称查询，所以这里不猜测也不偷连其他行情源。
+                # HQMP 没有已验证的代码到名称查询。证券名称只是
+                # 可选展示字段，这里不猜测也不偷连其他行情源。
                 instrument_of=lambda _code: None,
                 call_timeout=max(20.0, self.cfg.cancel_confirm_timeout),
                 cancel_visibility_timeout=self.cfg.cancel_confirm_timeout,
@@ -250,6 +254,28 @@ class TdxQuantDriver:
             return False, str(exc)
         return True, detail
 
+    def _retry_direct_registration(
+        self, account: str, detail: str
+    ) -> Tuple[bool, str]:
+        """短暂轮询登录后迟到的 RegisterClient，不执行任何登录动作。"""
+        assert self._hqmp_session is not None
+        connected, registered = self._hqmp_session.registration_snapshot()
+        if not connected:
+            return False, detail
+        deadline = time.monotonic() + _DIRECT_REGISTRATION_RETRY_SECONDS
+        while True:
+            if registered:
+                return self._direct_channel_probe(account)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False, (
+                    f"{detail}；已等待 {_DIRECT_REGISTRATION_RETRY_SECONDS:g} 秒仍未注册"
+                )
+            time.sleep(min(_DIRECT_REGISTRATION_RETRY_INTERVAL, remaining))
+            connected, registered = self._hqmp_session.registration_snapshot()
+            if not connected:
+                return False, detail
+
     # ── 登录 ─────────────────────────────────────────────
     def _resolve_cred(self, *, password: Optional[str], account: str,
                       account_type: str) -> Dict[str, str]:
@@ -328,6 +354,37 @@ class TdxQuantDriver:
         expected_account = str(cred.get("account") or "")
 
         self.latch.claim(expected_account)
+        first_unregistered_at: Optional[float] = None
+        registration_reset = False
+
+        def direct_probe(_cred: Dict[str, str]) -> Tuple[bool, str]:
+            """登录期间单次修复 TC 已连接但未发送注册帧的竞态。"""
+            nonlocal first_unregistered_at, registration_reset
+            ready, probe_detail = self._direct_channel_probe(expected_account)
+            if ready:
+                return True, probe_detail
+            recovery_detail = (
+                "；本轮已尝试重置一次未注册的 HQMP 连接"
+                if registration_reset
+                else ""
+            )
+            connected, registered = self._hqmp_session.registration_snapshot()
+            if not connected or registered:
+                first_unregistered_at = None
+                return False, probe_detail + recovery_detail
+            now = time.monotonic()
+            if first_unregistered_at is None:
+                first_unregistered_at = now
+                return False, probe_detail + recovery_detail
+            if not registration_reset and now - first_unregistered_at >= 5.0:
+                registration_reset = self._hqmp_session.reset_unregistered_connection()
+                if registration_reset:
+                    logger.warning(
+                        "[hqmp_login] TC 已连接但未注册，重置 HQMP 连接一次并等待重连"
+                    )
+                    return False, "TC 已连接但未注册，已重置 HQMP 连接并等待重连"
+            return False, probe_detail + recovery_detail
+
         try:
             ok, detail = L.ensure_logged_in(
                 cred,
@@ -335,7 +392,8 @@ class TdxQuantDriver:
                 start=start,
                 minimize=minimize,
                 required_processes=self._desktop_recipe.processes,
-                channel_probe=lambda _: self._direct_channel_probe(expected_account),
+                channel_probe=direct_probe,
+                process_finder=self._hqmp_session.verified_target_pids,
             )
         except SystemExit as exc:
             raise DriverError(f"起实验 TC 失败：{exc}") from exc
@@ -395,7 +453,7 @@ class TdxQuantDriver:
         if ready:
             return {"state": SessionState.READY.value, "ready": True, "detail": detail}
         try:
-            pids = L._target_pids(self._desktop_recipe.processes)
+            pids = self._hqmp_session.verified_target_pids(self._desktop_recipe.processes)
             if "TC.exe" not in pids.values():
                 return {
                     "state": SessionState.LOGIN_REQUIRED.value,
@@ -422,6 +480,9 @@ class TdxQuantDriver:
                 "ready": False,
                 "detail": f"检查实验 TC 登录窗口失败：{type(exc).__name__}",
             }
+        ready, detail = self._retry_direct_registration(account, detail)
+        if ready:
+            return {"state": SessionState.READY.value, "ready": True, "detail": detail}
         return {
             "state": SessionState.CHANNEL_UNAVAILABLE.value,
             "ready": False,

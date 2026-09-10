@@ -6,6 +6,7 @@ import ctypes
 from ctypes import wintypes
 import hashlib
 import json
+import logging
 import math
 import socket
 import subprocess
@@ -14,7 +15,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from cn_broker_api.symbols import market_of, symbol_key
 from cn_broker_api.trade.ack_unknown import AckUnknown
@@ -48,6 +49,9 @@ from .hqmp_capture import (
 )
 from .tc_proxy import FrameBuffer
 from .tq_constants import TqConstants
+
+
+logger = logging.getLogger(__name__)
 
 
 READ_ONLY_METHODS = frozenset({
@@ -301,7 +305,7 @@ class HqmpDirectSession:
             raise ValueError("launch_tc 与 reuse_tc 不能同时启用")
         blockers = _running_trade_processes()
         expected_tc = (self.root / "NewTc" / "TC.exe").resolve()
-        reusable = bool(blockers) and all(
+        reusable = len(blockers) == 1 and all(
             name.lower() == "tc.exe" and _process_image_path(process_id) == expected_tc
             for name, process_id in blockers
         )
@@ -345,9 +349,18 @@ class HqmpDirectSession:
                     if self._stop_event.is_set():
                         return
                     raise
-                self._serve_connection(connection)
+                try:
+                    self._serve_connection(connection)
+                except Exception as exc:  # noqa: BLE001 — 单连接失败后仍须接受 TC 重连
+                    if self._stop_event.is_set():
+                        return
+                    logger.warning(
+                        "[hqmp] TC 连接异常（%s），已清理该连接并继续等待重连",
+                        type(exc).__name__,
+                    )
         except Exception as exc:
             self._server_error = exc
+            logger.exception("[hqmp] 监听线程停止：%s", type(exc).__name__)
             self._client_registered.set()
             self._client_ready.set()
             self._fail_pending(exc)
@@ -371,19 +384,80 @@ class HqmpDirectSession:
                 except OSError:
                     if self._stop_event.is_set():
                         return
-                    raise
+                    # 单条 TC 连接被恢复流程主动断开，或对端自行重连，都不应杀死
+                    # 外层监听线程；清理当前会话后回到 accept() 等下一条连接。
+                    break
                 if not chunk:
                     break
                 for frame in parser.feed(chunk):
-                    self._handle_frame(frame)
+                    try:
+                        self._handle_frame(frame)
+                    except (ValueError, UnicodeError) as exc:
+                        # 帧边界已经由 FrameBuffer 确认；单个非业务帧或未知封装解码失败时，
+                        # 跳过该帧继续等 RegisterClient，不能把整条 TC 连接一起丢掉。
+                        logger.warning(
+                            "[hqmp] 跳过无法解码的单帧（%s）",
+                            type(exc).__name__,
+                        )
         finally:
             with self._state_lock:
                 if self._connection is connection:
                     self._connection = None
                     self._client_token = None
                     self._guid = None
+                    self._account = None
+                    self._client_registered.clear()
+                    self._client_ready.clear()
             connection.close()
             self._fail_pending(ConnectionError("TC 已断开 HQMP 连接"))
+
+    def registration_snapshot(self) -> tuple[bool, bool]:
+        """返回当前连接和注册状态，不执行恢复动作。"""
+        with self._state_lock:
+            connected = self._connection is not None
+            registered = self._client_registered.is_set() and bool(self._client_token)
+        return connected, registered
+
+    def verified_target_pids(self, names: Sequence[str]) -> dict[int, str]:
+        """只返回属于当前实验副本的唯一 TC 进程。
+
+        直接 HQMP 不能仅按进程名接管客户端：生产计划任务可能在服务
+        启动后拉起日常目录的同名进程。发现路径不符、Tdxw.exe 或多个
+        TC 时失败关闭，不扫它们的窗口，更不提交密码。
+        """
+        wanted = {str(name).lower() for name in names}
+        if wanted != {"tc.exe"}:
+            raise RuntimeError("直接 HQMP 登录只允许目标进程 TC.exe")
+        expected_tc = (self.root / "NewTc" / "TC.exe").resolve()
+        selected: dict[int, str] = {}
+        unexpected: list[tuple[str, int]] = []
+        for name, process_id in _running_trade_processes():
+            if name.lower() == "tc.exe" and _process_image_path(process_id) == expected_tc:
+                selected[process_id] = name
+            else:
+                unexpected.append((name, process_id))
+        if unexpected:
+            summary = ", ".join(f"{name}({process_id})" for name, process_id in unexpected)
+            raise RuntimeError(f"检测到不属于当前实验副本的交易客户端：{summary}")
+        if len(selected) > 1:
+            raise RuntimeError("当前实验副本存在多个 TC.exe，拒绝猜测会话")
+        return selected
+
+    def reset_unregistered_connection(self) -> bool:
+        """断开已连接但未注册的 TC，促使它重新执行 HQMP 握手。
+
+        只有显式登录编排会调用本方法；会话状态和健康检查保持纯观察。
+        已完成注册的连接绝不会被中断。
+        """
+        with self._state_lock:
+            connection = self._connection
+            if connection is None or self._client_registered.is_set():
+                return False
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+        return True
 
     def _handle_frame(self, frame: bytes) -> None:
         guid = _extract_guid(frame)
@@ -404,8 +478,9 @@ class HqmpDirectSession:
         if method == "RegisterClient":
             token = params.get("token")
             if isinstance(token, str) and token:
-                self._client_token = token
-                self._client_registered.set()
+                with self._state_lock:
+                    self._client_token = token
+                    self._client_registered.set()
         elif method == "NotifyMsgClient" and str(params.get("MsgType", "")) in {"1", "113"}:
             self._client_ready.set()
         elif method == "ReturnValueComp":
@@ -584,7 +659,7 @@ class HqmpDirectSession:
         self,
         *,
         symbol: str,
-        security_name: str,
+        security_name: str = "",
         side: str,
         size: int,
         price: float,
@@ -605,9 +680,6 @@ class HqmpDirectSession:
             raise ValueError(f"委托数量必须是正整数，收到 {size!r}")
         if not math.isfinite(float(price)) or float(price) <= 0:
             raise ValueError(f"限价必须为正数，收到 {price!r}")
-        if not str(security_name).strip():
-            raise ValueError("直接 HQMP 报单需要已核验的证券名称")
-
         account = self._current_account(timeout)
         constants = TqConstants.load(self.root / "PYPlugins")
         if credit_kind is not None:
@@ -629,6 +701,8 @@ class HqmpDirectSession:
                 "qsid": "0",
                 "realzjzh": "",
                 "zqdm": code,
+                # 委托身份只由 zqdm + setcode 确定。zqmc 是 TC 报文中的
+                # 可选展示字段；强制调用方传名称会引入第二个标的身份源。
                 "zqmc": str(security_name).strip(),
                 "setcode": "0" if market == "SZ" else "1",
                 "bsflag": str(order_type),

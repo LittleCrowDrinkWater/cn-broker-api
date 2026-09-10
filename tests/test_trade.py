@@ -71,10 +71,10 @@ def test_create_order_is_201_with_a_row(client):
     assert row["side"] == "buy"
 
 
-def test_optional_security_name_is_accepted_without_changing_the_paper_contract(client):
+def test_unknown_order_metadata_does_not_change_the_paper_contract(client):
     r = client.post(
         "/v1/orders",
-        json={**ORDER, "security_name": "平安银行"},
+        json={**ORDER, "security_name": "不参与委托身份"},
         headers=AUTH,
     )
 

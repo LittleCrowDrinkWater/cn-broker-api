@@ -16,8 +16,7 @@ class Trading(Protocol):
                      price: Optional[float] = None, order_type: str = "limit",
                      client_order_id: Optional[str] = None,
                      credit_kind: Optional[CreditOrderKind] = None,
-                     notify: Optional[int] = None,
-                     security_name: Optional[str] = None) -> Dict[str, Any]:
+                     notify: Optional[int] = None) -> Dict[str, Any]:
         """报一笔限价单，返回 `wire.order_row`。
 
         Raises:

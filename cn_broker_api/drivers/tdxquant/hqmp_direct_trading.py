@@ -26,8 +26,8 @@ class _MarketPort(Protocol):
 class HqmpDirectTrading:
     """将已启动的直接 HQMP 会话映射成 ``Trading`` 契约。
 
-    HQMP 报单必须带证券名称，而通用报单契约只带代码。因此名称必须由
-    ``instrument_of`` 显式提供；查不到就在发单前拒绝，不用代码或空字符串猜。
+    委托身份只使用已规范化的证券代码和市场。``instrument_of`` 只用于尽力
+    补充 TC 报文中的展示名称；查不到时传空，不因此拒绝已通过风控的委托。
     行情不属于直接 HQMP 已验证能力；如需 ``quotes``/``instrument`` 端点，必须
     注入独立的 ``market_port``。
     """
@@ -84,7 +84,6 @@ class HqmpDirectTrading:
         client_order_id: Optional[str] = None,
         credit_kind: Optional[CreditOrderKind] = None,
         notify: Optional[int] = None,
-        security_name: Optional[str] = None,
     ) -> Dict[str, Any]:
         """发限价委托；本通道直接进柜台，``notify`` 没有可对应的人工确认层。"""
         if not self._session.enable_trade:
@@ -123,10 +122,8 @@ class HqmpDirectTrading:
 
         code = to_tq_code(symbol)
         self._require_account()
-        instrument = None if security_name else self._instrument_of(code)
-        name = str(security_name or (instrument or {}).get("name") or "").strip()
-        if not name:
-            raise ValueError(f"报单缺少 {code} 的已核验证券名称，拒绝发送")
+        instrument = self._instrument_of(code)
+        name = str((instrument or {}).get("name") or "").strip()
         try:
             result = self._session.place_order(
                 symbol=code,

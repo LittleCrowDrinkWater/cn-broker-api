@@ -92,38 +92,13 @@ def test_create_order_resolves_the_verified_security_name_before_sending():
     assert session.required_accounts == [("", {"timeout": 3.0})]
 
 
-def test_missing_security_name_fails_before_any_order_is_sent():
+def test_missing_security_name_uses_symbol_as_the_only_order_identity():
     session, trading = _trading(instrument={"name": ""})
 
-    with pytest.raises(ValueError, match="证券名称"):
-        trading.create_order(symbol="000001", side="buy", size=100, price=10.61)
+    trading.create_order(symbol="000001", side="buy", size=100, price=10.61)
 
-    assert session.placed == []
-
-
-def test_explicit_security_name_does_not_call_the_fallback_resolver():
-    session = _FakeSession()
-
-    def resolver(_code):
-        pytest.fail("已显式给名称时不应再查行情源")
-
-    trading = HqmpDirectTrading(
-        session,
-        account_type="CREDIT",
-        instrument_of=resolver,
-        max_order_size=100,
-        max_order_notional=2000,
-    )
-
-    trading.create_order(
-        symbol="000001",
-        security_name="平安银行",
-        side="buy",
-        size=100,
-        price=10.61,
-    )
-
-    assert session.placed[0]["security_name"] == "平安银行"
+    assert session.placed[0]["symbol"] == "000001.SZ"
+    assert session.placed[0]["security_name"] == ""
 
 
 @pytest.mark.parametrize("size,price", [(200, 10.61), (100, 20.01)])

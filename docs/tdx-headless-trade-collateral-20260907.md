@@ -198,13 +198,12 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
   映射成统一交易契约；运输异常、柜台拒绝和回调超时保持不同错误类别。
 - 适配层在任何交易和账户查询前核对 TC 当前选中的资金账号；不一致时在发单前拒绝，错误信息
   不回显请求或实际账号。撤单还会核对委托行的实际证券代码，防止错单。
-- 直接 HQMP 报单契约要求真实证券名称，但现有 HTTP 报单契约只传代码。适配层已将名称解析建模为
-  显式依赖；名称不可得时拒绝报单，不使用空名称或代码猜测。现已由 HTTP `security_name` 和
-  `QuantTradeDemo` 的 `cn_symbol_info`/`--name` 路径装配。
+- 委托身份只由规范化证券代码和市场确定。`DoLevinGN_909` 中的 `zqmc` 降为通道内部的
+  可选展示字段，名称不可得时传空；不再要求 HTTP 调用方、自动策略或手工 CLI 传名称。
 - 正式驱动现已支持显式 `transport = "hqmp"`，且只允许与 `desktop_mode = "headless"`、实验标记、
   已核验 DLL 和明确的抓包模板组合。启动时先监听 HQMP，登录接口之后只拉起 `TC.exe`；禁止静默回落。
-- HTTP 报单现可选接收 `security_name`；`QuantTradeDemo` 的 `tdx_order.py` 会从 `cn_symbol_info` 查名称或要求
-  操作者用 `--name` 显式给出。直接通道缺名称时返回参数错误，不发送 HQMP 交易帧。
+- HTTP `TradingPort` 已移除 `security_name`；额外传入的名称不能覆盖代码身份。`QuantTradeDemo`
+  的网关和 `tdx_order.py` 也只发 `symbol`，不再依赖 `cn_symbol_info` 完整性。
 - 直接通道默认只读；打开交易闸后仍在发帧前执行独立的单笔数量和金额上限。
 
 ### 纯 headless 正式 HTTP 验收（2026-09-09/10）
@@ -222,6 +221,45 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 - 对账读取到 5 条持仓和 2 条当日委托，通道、账户、交易闸与无需页面确认四项检查全部通过；
 - 首次登录接口等待 240 秒后超时，但操作者界面已显示登录；此时 TC 到 13575 的 TCP 已建立，服务却尚未
   识别到 `RegisterClient`。只重启 Python HQMP 宿主并复用已登录 TC 后状态转为 `READY`，未再次提交密码；
+- 直接会话已增加登录期间的单次注册恢复：TCP 连接持续 5 秒仍未注册时，只断开该 HQMP 连接
+  促使 TC 重连，不重启 TC、不再次提交密码；断线后同时清除旧 token、就绪标志和账户缓存；
+- 2026-09-10 16:28 收盘后，在禁用会自动重启的生产计划任务后重做全新冷启动。CLI 约 10 秒内
+  从 `LOGIN_REQUIRED` 进入 `READY`，只有实验副本 `TC.exe`、无 `Tdxw.exe`；通道四项全绿，只读对账为
+  5 条持仓、14 条当日委托。此次未复现卡死竞态；
+- 2026-09-10 17:00 按操作者授权准备再次用仅证券代码的契约发送平安银行担保买入 100 股并立即撤单。
+  行情库确认当日收盘 11.85 元、最低 11.66 元、昨收 11.70 元，预定限价为 10.54 元；登录接口只提交
+  一次密码后，实验 `TC.exe` 已连接 13575，但 90 秒内没有产生可识别的 `RegisterClient`。通道检查保持
+  失败关闭，因此报单 CLI 未执行，账户没有新增委托；
+- 上述现场说明“仅断开未注册 TCP 促使 TC 重连”的恢复方式尚不能宣称有效。旧日志没有记录本轮是否实际
+  执行过连接重置；现已把重置动作写入服务日志和最终登录错误详情，并修正超时文案，使其明确表达
+  “密码已提交一次但通道未就绪”，而不是错误地声称没有见到登录框。失败后仍不重试密码；
+- 2026-09-10 17:10 按操作者指示再次调用登录接口，本次约 13 秒进入 `READY`，账户和资产探针以及
+  `tdx_channel_check.py` 四项检查全部通过。随后仅传 `000001.SZ`、100 股和 10.54 元担保买入参数，
+  报单请求已经到达柜台，但柜台明确返回 `(410)不支持隔日委托`；没有形成有效委托，因此没有可执行的
+  撤单。只读对账仍为 5 条持仓、14 条当日委托，确认没有新增委托；
+- `RegisterClient` 只表示 TC 向 HQMP 宿主注册，不能单独代表交易账户已登录。当前 `READY` 判据还要求
+  `OperateUser_0` 返回可选账户且 `DoLevinGN_830` 返回资金字段；TCP 已连接但没有 `RegisterClient`、
+  同时没有明确登录框时应归类为 `CHANNEL_UNAVAILABLE`，不能猜成 `LOGIN_REQUIRED` 或 `READY`；
+- 状态接口不依赖额外回调：当 TC 已连接、登录框已消失但 `RegisterClient` 可能迟到时，最多轮询 10 秒，
+  每 0.5 秒检查一次；注册出现后立即重新执行账户与资产探针。TC 未启动、登录框仍存在或连接已断开时
+  不等待，轮询超时仍返回 `CHANNEL_UNAVAILABLE`，且整个过程不提交密码、不发送或重试交易指令；
+- 2026-09-10 21:26 真机复现了延迟注册异常：登录提交后第一条 HQMP 连接出现 `JSONDecodeError`，旧行为会
+  让整个监听线程退出。现已改成单条连接异常只清理该连接并继续 `accept()`，帧边界完整但业务正文无法解码时
+  只跳过该帧继续等待 `RegisterClient`。本轮随后仍未注册，登录接口按事实超时；状态接口的 10 秒重试实际
+  耗时 10.43 秒并返回 `CHANNEL_UNAVAILABLE/已等待 10 秒仍未注册`，证明等待分支已在真机命中；
+- 保留该 TC、只重启修正后的 HQMP 宿主并开启受控复用后，没有再次提交密码，状态接口 0.33 秒返回
+  `READY`，`QuantTradeDemo` 通道检查四项全部通过。该恢复路径已再次真机验证，但尚未自动编排进登录接口；
+- 2026-09-10 17:18 未提交密码、未发送交易指令，分别验证两种明确未登录状态。实验 TC 未启动时，
+  `GET /v1/session/status` 返回 HTTP 200、`LOGIN_REQUIRED/ready=false`；`GET /v1/account` 返回 HTTP 503、
+  `broker_login_required`、`/v1/session/ensure` 和 `retryable_after_login=true`。随后只启动实验 TC 并保留
+  交易登录框，状态接口仍返回 `LOGIN_REQUIRED`，账户接口仍返回同一机器可读错误；此时 TC 尚未建立到
+  13575 的 TCP 连接。这证明明确未登录由“TC 未启动或已识别登录框”判定，而不是由 `RegisterClient`
+  缺失反推；
+- 2026-09-10 21:47 使用 `QuantTradeDemo` 的 `tdx_login.py --go --type CREDIT` 再做一次全新冷启动，
+  全程没有人工点击或切换宿主，约 12 秒从明确的 `LOGIN_REQUIRED` 进入 `READY`。进程中只有实验副本
+  `TC.exe`，没有启动 `Tdxw.exe` 行情页面；四项通道检查全绿，资产、5 条持仓和 0 条当日委托的只读
+  查询通过。会话就绪后再次调用 `--go` 幂等返回，密码提交计数保持 9 不变，没有重复填密码或点击登录；
+  为越过已有连续失败闩锁，本轮只临时把本地忽略配置的提交上限调高，结束后已恢复为 10/3，历史计数未删除；
 - 验收结束后已停止 broker API 和实验 `TC.exe`，17710/13575 均已释放。
 
 正式 MCP/桌面通道的自动登录已经使用 `QuantTradeDemo` 数据库中的加密凭证完成一次真机验收；密码仅在
@@ -230,14 +268,16 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 
 ### 代码、验证与远端快照
 
-- 服务端开发分支：`feature/tdx-headless-trade`；本轮开始时与远端同名分支同步，当前可靠撤单状态机和本文更新
-  尚待提交；调用方 `QuantTradeDemo` 使用从 `master` 新建的 `feature/broker-session-state` 分支，v5 接入尚待提交；
+- 服务端开发分支：`feature/tdx-headless-trade`，基础实现已以 `32791da` 推送；调用方
+  `feature/broker-session-state` 的 v5 基础接入已以 `27d7ea34` 推送。本轮证券代码单一身份、
+  注册恢复、进程路径绑定和本文更新在两个功能分支上均尚未提交；
 - `3e21491 fix(tdxquant): handle stale signals across midnight`：完成自动确认脚本跨午夜修复；
 - `22c08d0 feat(tdxquant): expose explicit session state`：完成会话状态、未登录错误契约、
   直接 HQMP 就绪探针和自动登录原型；
-- 服务端全量测试结果：`287 passed`；`python -m compileall -q cn_broker_api tests` 通过；
+- 服务端全量测试结果：`302 passed`；`python -m compileall -q cn_broker_api tests` 通过；
   `git diff --check` 通过，仅有 Git 提示工作区未来可能按 Windows 配置把 LF 转为 CRLF；
-- 调用方本轮相关测试 `163 passed`，跨仓库真实 HTTP/纸面驱动契约测试之前已有 `7 passed`，仓库根执行的
+- 调用方网关与客户端相关测试 `67 passed`，生产职责路径回归 `608 passed`，
+  跨仓库真实 HTTP/纸面驱动契约测试 `7 passed`；仓库根执行的
   `flake8 backend --select=F --extend-ignore=F541` 通过；
 - 历史抓包离线复核确认 807/822 结果字段为 `wtbh/zqdm/setcode/bsflag/wtsl/wtjg/cjsl/cjjg/cdflag/`
   `kcdflag/wtsj/ztsm`，与本轮状态机读取字段一致；
@@ -253,7 +293,7 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 当前可以明确做到：调用方可先查询会话状态；业务请求遇到确切未登录证据时可收到稳定、机器可读的
 `broker_login_required`，再调用 `/v1/session/ensure`。直接 HQMP 已完成自动登录、正式 HTTP 查询以及担保买入、
 融资买入的真实报撤验收；当前还不能宣称做到的是首次冷启动注册竞态的自动恢复、断线自动重连、长期无人值守，
-以及生产自动策略的证券名称传递和更高交易限额。
+以及生产自动策略切换到新通道和更高交易限额。
 
 ### 下一步待办
 
@@ -281,6 +321,8 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
    - 增加 `GET /v1/session/status`，供调用方在交易前主动查询状态，也供登录任务完成后确认账户和资产
      已可用。状态接口不得返回密码、完整账号、资产明细或窗口截图；
    - 先启动 HQMP 监听，再启动路径核验过的 `TC.exe`，定位并解决纯宿主冷启动时 TC 不注册或提前退出的问题；
+   - 先复现并记录“TCP 已连接但未注册”时单次连接重置的实际执行结果；若重连仍不发送 `RegisterClient`，
+     将已经真机验证过的“保留已登录 TC、只重启 HQMP 宿主并复用”的恢复步骤收进受控状态机；
    - 如果短期仍需原厂宿主热切换，应由一个受控编排器管理两个宿主的启动、登录验证、端口交接和重连，
      不能依赖人工停止进程或固定等待时间；
    - 登录窗口只在账号、密码框和登录按钮都唯一识别、密码星号宽度校验通过时提交一次；验证码、二次认证、
@@ -290,9 +332,10 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
    - 凭证不得写日志或仓库。后续可评估 Windows Credential Manager/DPAPI，替代长期明文凭证文件；
    - 增加冷启动、已登录复用、密码错误、验证码、客户端升级、断线重登和失败次数耗尽的自动化测试。
 
-   纯 Python 宿主冷启动、实验 `TC.exe` 注册、数据库凭证登录和 `READY` 复查已真机通过，无需原厂宿主热切换。
-   下一轮优先在可核验当前价格的盘中时段，用 `QuantTradeDemo` 的 `tdx_order.py ... --go --cancel-after`
-   完成一笔受单笔上限保护的真实闭环；之后再验证断线重连和持久化恢复。
+   纯 Python 宿主冷启动、实验 `TC.exe` 注册、数据库凭证登录和 `READY` 复查都曾真机通过，无需原厂宿主热切换；
+   但 2026-09-10 17:00 再次出现登录后不注册，长期无人值守仍不成立。下一轮先验收受控的宿主重启复用恢复，
+   再用 `QuantTradeDemo` 的 `tdx_order.py ... --go --cancel-after` 补做一笔只传证券代码的 100 股报撤闭环；
+   之后验证断线重连和持久化恢复。
 
    建议的登录状态机为：
 
@@ -349,13 +392,13 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 
 4. **P1（手工正式入口已验收，生产自动策略尚未接通）：接入正式交易接口**
    - 已为 `HqmpDirectSession` 增加符合 `TradingPort` 形状的适配器，并补齐全量委托、持仓和资产查询；
-   - 证券名称由 `QuantTradeDemo` 从已有 `cn_symbol_info` 名称表随报单显式传入，也可由操作者通过
-     `--name` 给出；名称缺失时失败关闭；
+   - 证券代码是唯一委托身份；`QuantTradeDemo` 网关和手工 CLI 已移除名称查询与 `--name`，
+     服务端也不接受名称作为 `TradingPort` 字段；
    - 已通过明确配置选择现有 MCP/ctypes 通道或直接 HQMP 通道，禁止静默回落；
    - 已接入 `/v1/orders`、撤单和查询端点，并保留实盘开关、单笔数量和金额上限；
    - 已区分参数拒绝、柜台拒绝、状态未知和登录失效；版本不支持的识别仍需继续补齐。
-   - `QuantTradeDemo master` 的尾盘调仓和日内回转调用目前不传 `security_name`，直接 HQMP 会失败关闭；
-     必须在统一网关处从 `cn_symbol_info` 注入名称，不能要求每个策略各自补一份。
+   - 尾盘调仓和日内回转原本就只传代码，现与直接 HQMP 契约一致；还需在该分支合并后
+     做一次不发单的生产配置启动验收；
    - 当前真机配置的 100 股/2000 元上限只适合验收，不能承载生产调仓；放宽前要增加组合级限额和回归验证。
 
 5. **P2：补齐协议和实盘覆盖范围**

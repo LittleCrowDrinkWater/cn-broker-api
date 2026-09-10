@@ -42,15 +42,13 @@ def register(app: Flask, ctx: ApiContext) -> None:
         if price <= 0:
             raise ValueError(f"price 要是正数，收到 {price}")
         notify = None if body.get("notify") is None else _int(body.get("notify"), "notify")
-        security_name = str(body.get("security_name") or "").strip() or None
 
         row = in_queue(ctx, account, account_type, f"报单 {symbol}",
                        lambda t: t.create_order(
                            symbol=symbol, side=side, size=size,
                            price=price, order_type=str(body.get("order_type") or "limit"),
                            client_order_id=body.get("client_order_id"),
-                           credit_kind=credit_kind, notify=notify,
-                           security_name=security_name))
+                           credit_kind=credit_kind, notify=notify))
         return jsonify(order=row), 201
 
     @app.delete("/v1/orders/<order_id>")

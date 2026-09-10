@@ -105,6 +105,7 @@ class _FakeDirectSession:
         self.enable_trade = enable_trade
         self.started = []
         self.stopped = False
+        self.registration_resets = 0
 
     def start(self, **kwargs):
         self.started.append(kwargs)
@@ -117,6 +118,16 @@ class _FakeDirectSession:
 
     def require_account(self, _account, *, timeout):
         return None
+
+    def registration_snapshot(self):
+        return True, False
+
+    def reset_unregistered_connection(self):
+        self.registration_resets += 1
+        return True
+
+    def verified_target_pids(self, names):
+        return {7: "TC.exe"}
 
 
 def test_hqmp_driver_starts_listener_and_never_adds_tdxw(tmp_path, monkeypatch):
@@ -177,6 +188,172 @@ def test_ready_hqmp_login_does_not_read_credentials(tmp_path, monkeypatch):
     assert got.ok is True
     assert got.acted is False
     assert settled == [("private-account", True)]
+
+
+def test_hqmp_login_resets_a_stuck_unregistered_connection_once(tmp_path, monkeypatch):
+    (tmp_path / ".trade-lab-marker").touch()
+    monkeypatch.setattr(driver_module, "HqmpDirectSession", _FakeDirectSession)
+    driver = TdxQuantDriver(
+        TdxQuantConfig(
+            tdx_home=tmp_path,
+            desktop_mode="headless",
+            transport="hqmp",
+            hqmp_port=13575,
+            hqmp_capture=tmp_path / "outside.jsonl",
+            cred_source="request",
+        ),
+        latch=type(
+            "_Latch",
+            (),
+            {
+                "claim": lambda _self, _account: None,
+                "settle": lambda _self, _account, _ok: None,
+            },
+        )(),
+    )
+    monkeypatch.setattr(driver, "_direct_channel_probe", lambda _account: (False, "not ready"))
+    times = iter((0.0, 6.0, 9.0))
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: next(times))
+
+    def ensure_logged_in(_cred, **kwargs):
+        probe = kwargs["channel_probe"]
+        assert kwargs["process_finder"] == driver._hqmp_session.verified_target_pids
+        assert probe({}) == (False, "not ready")
+        assert "已重置 HQMP 连接" in probe({})[1]
+        ready, detail = probe({})
+        assert ready is False
+        assert detail == "not ready；本轮已尝试重置一次未注册的 HQMP 连接"
+        return False, "still not ready"
+
+    monkeypatch.setattr(driver_module.L, "ensure_logged_in", ensure_logged_in)
+
+    got = driver.ensure_logged_in(
+        password="secret", account="private-account", account_type="CREDIT"
+    )
+
+    assert got.ok is False
+    assert driver._hqmp_session.registration_resets == 1
+
+
+def test_hqmp_status_rejects_a_same_name_process_from_another_install(tmp_path, monkeypatch):
+    (tmp_path / ".trade-lab-marker").touch()
+    monkeypatch.setattr(driver_module, "HqmpDirectSession", _FakeDirectSession)
+    driver = TdxQuantDriver(
+        TdxQuantConfig(
+            tdx_home=tmp_path,
+            desktop_mode="headless",
+            transport="hqmp",
+            hqmp_port=13575,
+            hqmp_capture=tmp_path / "outside.jsonl",
+        ),
+        latch=object(),
+    )
+    monkeypatch.setattr(driver, "_direct_channel_probe", lambda _account: (False, "not ready"))
+    monkeypatch.setattr(
+        driver._hqmp_session,
+        "verified_target_pids",
+        lambda _names: (_ for _ in ()).throw(RuntimeError("路径不匹配")),
+    )
+
+    status = driver.session_status(account_type="CREDIT")
+
+    assert status["state"] == "CHANNEL_UNAVAILABLE"
+    assert status["ready"] is False
+    assert "RuntimeError" in status["detail"]
+
+
+def test_hqmp_status_retries_a_delayed_registration_then_returns_ready(tmp_path, monkeypatch):
+    (tmp_path / ".trade-lab-marker").touch()
+    monkeypatch.setattr(driver_module, "HqmpDirectSession", _FakeDirectSession)
+    driver = TdxQuantDriver(
+        TdxQuantConfig(
+            tdx_home=tmp_path,
+            desktop_mode="headless",
+            transport="hqmp",
+            hqmp_port=13575,
+            hqmp_capture=tmp_path / "outside.jsonl",
+        ),
+        latch=object(),
+    )
+    probes = iter(((False, "TC 尚未注册"), (True, "账户和资产查询已通过")))
+    registrations = iter(((True, False), (True, False), (True, True)))
+    monkeypatch.setattr(driver, "_direct_channel_probe", lambda _account: next(probes))
+    monkeypatch.setattr(
+        driver._hqmp_session, "registration_snapshot", lambda: next(registrations)
+    )
+    monkeypatch.setattr(driver_module.L, "find_login_dialog", lambda _pids: None)
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: 0.0)
+    sleeps = []
+    monkeypatch.setattr(driver_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    status = driver.session_status(account_type="CREDIT")
+
+    assert status == {
+        "state": "READY",
+        "ready": True,
+        "detail": "账户和资产查询已通过",
+    }
+    assert sleeps == [0.5, 0.5]
+
+
+def test_hqmp_status_does_not_retry_while_login_dialog_is_visible(tmp_path, monkeypatch):
+    (tmp_path / ".trade-lab-marker").touch()
+    monkeypatch.setattr(driver_module, "HqmpDirectSession", _FakeDirectSession)
+    driver = TdxQuantDriver(
+        TdxQuantConfig(
+            tdx_home=tmp_path,
+            desktop_mode="headless",
+            transport="hqmp",
+            hqmp_port=13575,
+            hqmp_capture=tmp_path / "outside.jsonl",
+        ),
+        latch=object(),
+    )
+    monkeypatch.setattr(driver, "_direct_channel_probe", lambda _account: (False, "not ready"))
+    monkeypatch.setattr(driver_module.L, "find_login_dialog", lambda _pids: 99)
+    monkeypatch.setattr(driver_module.L, "snapshot", lambda _dialog: [])
+    monkeypatch.setattr(driver_module.L, "classify", lambda _controls: "trade")
+    monkeypatch.setattr(
+        driver,
+        "_retry_direct_registration",
+        lambda *_args: pytest.fail("登录框存在时不应等待 RegisterClient"),
+    )
+
+    status = driver.session_status(account_type="CREDIT")
+
+    assert status["state"] == "LOGIN_REQUIRED"
+    assert status["ready"] is False
+
+
+def test_hqmp_status_stops_retrying_after_registration_deadline(tmp_path, monkeypatch):
+    (tmp_path / ".trade-lab-marker").touch()
+    monkeypatch.setattr(driver_module, "HqmpDirectSession", _FakeDirectSession)
+    driver = TdxQuantDriver(
+        TdxQuantConfig(
+            tdx_home=tmp_path,
+            desktop_mode="headless",
+            transport="hqmp",
+            hqmp_port=13575,
+            hqmp_capture=tmp_path / "outside.jsonl",
+        ),
+        latch=object(),
+    )
+    monkeypatch.setattr(driver, "_direct_channel_probe", lambda _account: (False, "TC 尚未注册"))
+    monkeypatch.setattr(driver_module.L, "find_login_dialog", lambda _pids: None)
+    monkeypatch.setattr(
+        driver._hqmp_session, "registration_snapshot", lambda: (True, False)
+    )
+    times = iter((0.0, 0.0, 10.0))
+    monkeypatch.setattr(driver_module.time, "monotonic", lambda: next(times))
+    sleeps = []
+    monkeypatch.setattr(driver_module.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    status = driver.session_status(account_type="CREDIT")
+
+    assert status["state"] == "CHANNEL_UNAVAILABLE"
+    assert status["ready"] is False
+    assert status["detail"] == "TC 尚未注册；已等待 10 秒仍未注册"
+    assert sleeps == [0.5]
 
 
 def test_headless_driver_recipe_never_contains_tdxw(tmp_path):

@@ -24,8 +24,7 @@ class PaperTrading:
                      price: Optional[float] = None, order_type: str = "limit",
                      client_order_id: Optional[str] = None,
                      credit_kind: Optional[CreditOrderKind] = None,
-                     notify: Optional[int] = None,
-                     security_name: Optional[str] = None) -> Dict[str, Any]:
+                     notify: Optional[int] = None) -> Dict[str, Any]:
         self._seq += 1
         row = order_row(order_id=f"paper-{self._seq}", client_order_id=client_order_id,
                         symbol=to_tq_code(symbol), side=str(side).lower(), status=LIVE,

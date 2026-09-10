@@ -193,6 +193,175 @@ def test_wait_for_client_can_accept_registered_reused_session(tmp_path):
     host.wait_for_client(0.01, require_ready=False)
 
 
+def test_unregistered_connection_can_be_reset_without_touching_a_registered_one(tmp_path):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    server_connection, client_connection = socket.socketpair()
+    try:
+        host._connection = server_connection
+        assert host.registration_snapshot() == (True, False)
+        assert host.reset_unregistered_connection() is True
+
+        host._client_registered.set()
+        host._client_token = "route"
+        assert host.registration_snapshot() == (True, True)
+        assert host.reset_unregistered_connection() is False
+    finally:
+        server_connection.close()
+        client_connection.close()
+
+
+def test_connection_socket_error_returns_to_the_listener_instead_of_killing_it(tmp_path):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+
+    class BrokenConnection:
+        def __init__(self):
+            self.closed = False
+
+        def settimeout(self, _timeout):
+            return None
+
+        def recv(self, _size):
+            raise OSError("connection reset")
+
+        def close(self):
+            self.closed = True
+
+    connection = BrokenConnection()
+
+    host._serve_connection(connection)
+
+    assert connection.closed is True
+    assert host.registration_snapshot() == (False, False)
+    assert host._server_error is None
+
+
+def test_listener_continues_accepting_after_one_connection_fails(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+
+    class Listener:
+        def __init__(self):
+            self.accepted = 0
+
+        def accept(self):
+            self.accepted += 1
+            return object(), None
+
+    listener = Listener()
+    host._listener = listener
+    connections = []
+
+    def serve_connection(connection):
+        connections.append(connection)
+        if len(connections) == 1:
+            raise ValueError("bad first connection")
+        host._stop_event.set()
+
+    monkeypatch.setattr(host, "_serve_connection", serve_connection)
+
+    host._serve()
+
+    assert listener.accepted == 2
+    assert len(connections) == 2
+    assert host._server_error is None
+
+
+def test_bad_frame_is_skipped_before_a_valid_register_frame(tmp_path):
+    pytest.importorskip("Crypto.Cipher.Blowfish")
+    key = b"synthetic-test-key"
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    host._key = key
+    host._response_template = _response_template()
+    invalid_body = b"\0" * 8
+    invalid_payload = b"\x92\xabrpcfunction" + _pack_length(len(invalid_body)) + invalid_body
+    invalid_frame = (
+        b"\x27\x00\x00\x00"
+        + len(invalid_payload).to_bytes(4, "little")
+        + (1).to_bytes(4, "little")
+        + b"\0" * 8
+        + invalid_payload
+    )
+    register_frame = _rpc_frame(
+        {"method": "RegisterClient", "params": {"token": "private-route"}},
+        key,
+        2,
+    )
+    server_connection, client_connection = socket.socketpair()
+    client_connection.settimeout(2)
+    worker = threading.Thread(
+        target=host._serve_connection, args=(server_connection,), daemon=True
+    )
+    worker.start()
+    try:
+        client_connection.sendall(invalid_frame + register_frame)
+
+        response = _recv_frame(client_connection)
+        assert int.from_bytes(response[8:12], "little") == 2
+        assert host.registration_snapshot() == (True, True)
+    finally:
+        host._stop_event.set()
+        client_connection.close()
+        worker.join(timeout=2)
+        server_connection.close()
+
+
+def test_direct_process_lookup_requires_one_tc_from_the_lab_root(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    expected = (tmp_path / "NewTc" / "TC.exe").resolve()
+    monkeypatch.setattr(hqmp_module, "_running_trade_processes", lambda: [("TC.exe", 7)])
+    monkeypatch.setattr(hqmp_module, "_process_image_path", lambda _pid: expected)
+
+    assert host.verified_target_pids(("TC.exe",)) == {7: "TC.exe"}
+
+
+@pytest.mark.parametrize("process_name", ["TC.exe", "Tdxw.exe"])
+def test_direct_process_lookup_rejects_clients_from_another_install(
+    tmp_path, monkeypatch, process_name
+):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    monkeypatch.setattr(
+        hqmp_module, "_running_trade_processes", lambda: [(process_name, 7)]
+    )
+    monkeypatch.setattr(
+        hqmp_module, "_process_image_path", lambda _pid: tmp_path / "other" / process_name
+    )
+
+    with pytest.raises(RuntimeError, match="实验副本"):
+        host.verified_target_pids(("TC.exe",))
+
+
+def test_direct_process_lookup_rejects_multiple_lab_clients(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    expected = (tmp_path / "NewTc" / "TC.exe").resolve()
+    monkeypatch.setattr(
+        hqmp_module,
+        "_running_trade_processes",
+        lambda: [("TC.exe", 7), ("TC.exe", 8)],
+    )
+    monkeypatch.setattr(hqmp_module, "_process_image_path", lambda _pid: expected)
+
+    with pytest.raises(RuntimeError, match="多个"):
+        host.verified_target_pids(("TC.exe",))
+
+
+def test_disconnect_clears_registration_and_cached_account(tmp_path):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    host._client_registered.set()
+    host._client_ready.set()
+    host._client_token = "route"
+    host._account = {"zjzh": "private"}
+    server_connection, client_connection = socket.socketpair()
+    worker = threading.Thread(
+        target=host._serve_connection, args=(server_connection,), daemon=True
+    )
+    worker.start()
+    client_connection.close()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert host.registration_snapshot() == (False, False)
+    assert host._account is None
+
+
 def test_trade_methods_require_the_explicit_gate(tmp_path):
     host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
     host._client_token = "route"
@@ -319,6 +488,37 @@ def test_builds_the_observed_collateral_buy_contract(tmp_path, monkeypatch):
             3.0,
         )
     ]
+
+
+def test_order_contract_allows_an_empty_display_name(tmp_path, monkeypatch):
+    constants = tmp_path / "PYPlugins" / "sys"
+    constants.mkdir(parents=True)
+    (constants / "tqcenter.py").write_text(
+        "class tqconst:\n"
+        "    STOCK_BUY = 0\n"
+        "    STOCK_SELL = 1\n"
+        "    PRICE_MY = 0\n",
+        encoding="utf-8",
+    )
+    host = HqmpDirectSession(
+        tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
+    )
+    monkeypatch.setattr(host, "_current_account", lambda timeout: {"userid": "private-user"})
+    calls = []
+    monkeypatch.setattr(
+        host,
+        "call",
+        lambda method, params, timeout=20.0: (
+            calls.append((method, params, timeout))
+            or [{"retflag": "1", "retinfo": "", "wtbh": "private-order"}]
+        ),
+    )
+
+    host.place_order(symbol="000001.SZ", side="buy", size=100, price=10.72)
+
+    assert calls[0][1]["zqdm"] == "000001"
+    assert calls[0][1]["setcode"] == "0"
+    assert calls[0][1]["zqmc"] == ""
 
 
 def test_builds_the_observed_cancel_contract(tmp_path, monkeypatch):

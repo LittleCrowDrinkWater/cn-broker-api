@@ -20,6 +20,27 @@ def test_injected_channel_probe_can_confirm_login(monkeypatch):
     assert len(seen) == 1
 
 
+def test_injected_process_finder_is_used_instead_of_global_process_names(monkeypatch):
+    monkeypatch.setattr(login, "_WIN", True)
+    monkeypatch.setattr(
+        login,
+        "_target_pids",
+        lambda _names: (_ for _ in ()).throw(AssertionError("不应按全局进程名查找")),
+    )
+    seen = []
+
+    result = login.ensure_logged_in(
+        {"account": "private", "password": "secret"},
+        start=False,
+        required_processes=("TC.exe",),
+        channel_probe=lambda _cred: (True, "direct ready"),
+        process_finder=lambda names: (seen.append(tuple(names)) or {7: "TC.exe"}),
+    )
+
+    assert result == (True, "direct ready")
+    assert seen == [("TC.exe",)]
+
+
 def test_trade_password_is_submitted_only_once_while_dialog_remains(monkeypatch):
     monkeypatch.setattr(login, "_WIN", True)
     monkeypatch.setattr(login, "_target_pids", lambda names: {7: "TC.exe"})
@@ -36,7 +57,7 @@ def test_trade_password_is_submitted_only_once_while_dialog_remains(monkeypatch)
         lambda dialog, controls, cred: submits.append(dialog) or True,
     )
 
-    ok, _ = login.ensure_logged_in(
+    ok, detail = login.ensure_logged_in(
         {"account": "private", "password": "secret"},
         wait=3,
         start=False,
@@ -47,3 +68,6 @@ def test_trade_password_is_submitted_only_once_while_dialog_remains(monkeypatch)
 
     assert ok is False
     assert submits == [99]
+    assert "交易登录已提交一次" in detail
+    assert "not ready" in detail
+    assert "不会再次提交密码" in detail

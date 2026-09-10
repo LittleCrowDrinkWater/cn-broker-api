@@ -566,6 +566,9 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
                      required_processes: Sequence[str] = PROCS,
                      channel_probe: Optional[
                          Callable[[dict], Tuple[bool, str]]
+                     ] = None,
+                     process_finder: Optional[
+                         Callable[[Sequence[str]], Dict[int, str]]
                      ] = None) -> Tuple[bool, str]:
     """把"交易通道可用"这件事做成。返回 (成不成, 一句话)。
 
@@ -579,6 +582,7 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
     在界面上点【交易】才拉起，缺它的表现是"既没登上、也没有登录框"的僵局。
 
      `channel_probe` 允许直接 HQMP 复用这套窗口操作，同时用自己的账户/资产调用判定成功。
+     `process_finder` 允许它把可执行文件路径纳入进程身份校验，避免接管其他安装目录的同名 TC。
      **失败绝不重试**：密码连续输错会被券商锁一天。失败就如实返回，让上层去告警。
     """
     if not _WIN:
@@ -588,7 +592,8 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
     unknown = [name for name in required_processes if name not in launchers]
     if unknown:
         return False, f"没有启动配方：{unknown}"
-    pids = _target_pids(required_processes)
+    find_pids = process_finder or _target_pids
+    pids = find_pids(required_processes)
     if start:
         for name in required_processes:
             boot = launchers[name]
@@ -598,7 +603,7 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
             t0 = time.time()
             while name not in pids.values() and time.time() - t0 < 90:
                 time.sleep(1.0)
-                pids = _target_pids(required_processes)
+                pids = find_pids(required_processes)
             if name not in pids.values():
                 return False, f"起了 {name} 但 90 秒内没见到这个进程"
     if not pids:
@@ -616,11 +621,11 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
             # 本来就登着就不动窗口（多半是人正在看它），只有这一趟真登过才收起来。
             if minimize and acted:
                 # 只在确认可用之后才最小化：失败时收窗口等于把唯一能看出哪里不对的东西藏起来。
-                got = minimize_client(_target_pids(required_processes))
+                got = minimize_client(find_pids(required_processes))
                 _say(f"已把客户端最小化（{got} 个窗口）——它照常连着")
             return True, detail
 
-        dlg = find_login_dialog(_target_pids(required_processes))
+        dlg = find_login_dialog(find_pids(required_processes))
         if dlg is not None:
             ctls = snapshot(dlg)
             kind = classify(ctls)
@@ -642,7 +647,12 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
                 return False, "认不出这是哪道门 ⇒ 中止"
 
         if time.time() > t_end:
-            missing = "TC.exe" not in _target_pids(required_processes).values()
+            if submitted_trade_login:
+                return False, (
+                    f"交易登录已提交一次，但 {wait} 秒内通道仍未就绪：{detail}。"
+                    "为避免账户锁定，本次不会再次提交密码"
+                )
+            missing = "TC.exe" not in find_pids(required_processes).values()
             return False, (f"{wait} 秒内既没登上、也没等到登录框。"
                            + ("交易模块（TC.exe）没在跑" if missing
                               else "交易模块在跑但不弹框"))
