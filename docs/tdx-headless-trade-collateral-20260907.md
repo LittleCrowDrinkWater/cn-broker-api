@@ -273,7 +273,7 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 - `3e21491 fix(tdxquant): handle stale signals across midnight`：完成自动确认脚本跨午夜修复；
 - `22c08d0 feat(tdxquant): expose explicit session state`：完成会话状态、未登录错误契约、
   直接 HQMP 就绪探针和自动登录原型；
-- 服务端全量测试结果：`302 passed`；`python -m compileall -q cn_broker_api tests` 通过；
+- 服务端全量测试结果：`328 passed`；`python -m compileall -q cn_broker_api tests` 通过；
   `git diff --check` 通过，仅有 Git 提示工作区未来可能按 Windows 配置把 LF 转为 CRLF；
 - 调用方网关与客户端相关测试 `67 passed`，生产职责路径回归 `608 passed`，
   跨仓库真实 HTTP/纸面驱动契约测试 `7 passed`；仓库根执行的
@@ -406,6 +406,8 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 - 本机忽略配置已切为 `desktop_mode=headless`、`transport=hqmp`、`hqmp_enable_trade=true`；
 - `hqmp_reuse_tc=true`：没有 TC 时允许冷启动，服务重启时只接管路径精确匹配的单个实验副本 TC；
 - Windows 计划任务 `cn-broker-api` 已启用并启动，17710（HTTP）与 13575（HQMP）均正常监听；
+- 计划任务停止后实验副本 `TC.exe` 保持运行；重新启动任务后服务按路径接管原进程，
+  `/v1/session/status` 直接恢复 `READY`，没有再次提交密码；
 - 通过 QuantTradeDemo 的 `tdx_login.py --go --type CREDIT --wait 90` 完成无人干预登录；
 - `tdx_channel_check.py --type CREDIT` 返回 4 项通过，并确认直接 HQMP 不依赖页面自动确认补丁；
 - `tdx_order.py inspect --type CREDIT` 完成资产、持仓和当日委托只读查询：持仓 5 条、当日委托 0 条；
