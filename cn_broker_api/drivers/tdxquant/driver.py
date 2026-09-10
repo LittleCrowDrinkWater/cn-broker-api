@@ -448,6 +448,37 @@ class TdxQuantDriver:
             "detail": "交易内核运行中，但账户与资产查询未通过，且没有明确的登录窗口",
         }
 
+    def operation_session_status(self, *, account: str = "",
+                                 account_type: str = "STOCK") -> Dict[str, Any]:
+        """业务调用前的轻量状态检查；完整探测由 ``session_status`` 提供。"""
+        if self._hqmp_session is None:
+            return self.session_status(account=account, account_type=account_type)
+        ready, detail = self._hqmp_session.operation_ready(account)
+        if ready:
+            return {"state": SessionState.READY.value, "ready": True, "detail": detail}
+        try:
+            pids = self._hqmp_session.verified_target_pids(self._desktop_recipe.processes)
+            if "TC.exe" not in pids.values():
+                return {
+                    "state": SessionState.LOGIN_REQUIRED.value,
+                    "ready": False,
+                    "detail": "交易内核 TC.exe 未启动；可调用登录接口启动并登录",
+                }
+            dialog = L.find_login_dialog(pids)
+            if dialog is not None and L.classify(L.snapshot(dialog)) == "trade":
+                return {
+                    "state": SessionState.LOGIN_REQUIRED.value,
+                    "ready": False,
+                    "detail": "已识别到交易登录窗口；可调用登录接口完成登录",
+                }
+        except Exception as exc:  # noqa: BLE001 — 这里只能把状态降为不可用
+            detail = f"检查交易登录窗口失败：{type(exc).__name__}"
+        return {
+            "state": SessionState.CHANNEL_UNAVAILABLE.value,
+            "ready": False,
+            "detail": detail,
+        }
+
     def _direct_session_status(self, account: str) -> Dict[str, Any]:
         ready, detail = self._direct_channel_probe(account)
         if ready:

@@ -42,8 +42,16 @@ def account_of(body: Optional[Dict[str, Any]] = None) -> Tuple[str, str]:
     配错直接连不上——**这是本项目能拿到的最强的一道账户校验**。
     """
     src = body if body is not None else request.args
-    account = str(src.get("account") or "").strip()
-    account_type = str(src.get("account_type") or "STOCK").strip().upper()
+    raw_account = src.get("account")
+    raw_type = src.get("account_type")
+    if raw_account is not None and not isinstance(raw_account, str):
+        raise ValueError("account 必须是字符串")
+    if raw_type is not None and not isinstance(raw_type, str):
+        raise ValueError("account_type 必须是字符串")
+    account = (raw_account or "").strip()
+    account_type = (raw_type or "STOCK").strip().upper()
+    if account_type not in {"STOCK", "CREDIT"}:
+        raise ValueError("account_type 只能是 STOCK 或 CREDIT")
     return account, account_type
 
 
@@ -97,7 +105,13 @@ def in_queue(ctx: ApiContext, account: str, account_type: str, what: str,
     「同账户接着做完」这条规则失效。
     """
     def invoke() -> Any:
-        status_fn = getattr(ctx.driver, "session_status", None)
+        # 交易热路径只做连接级检查。显式状态接口仍执行完整账户与资产探测；每笔
+        # 委托前重复完整探测会与业务调用争用同一条串行连接。
+        status_fn = getattr(
+            ctx.driver,
+            "operation_session_status",
+            getattr(ctx.driver, "session_status", None),
+        )
         if status_fn is not None:
             status = status_fn(account=account, account_type=account_type)
             state = str(status.get("state") or SessionState.CHANNEL_UNAVAILABLE.value)

@@ -12,6 +12,14 @@ from flask import Flask, jsonify, request
 from cn_broker_api.api.context import ApiContext
 from cn_broker_api.api.probe import cache_key as _cache_key
 from cn_broker_api.api.probe import probe
+from cn_broker_api.api.request_validation import (
+    account_type as parse_account_type,
+    boolean,
+    integer,
+    json_object,
+    optional_string,
+    string,
+)
 from cn_broker_api.api.trade_call import maps_failures
 from cn_broker_api.drivers.capability_missing import CapabilityMissing
 from cn_broker_api.drivers.driver_error import DriverError
@@ -49,15 +57,19 @@ def register(app: Flask, ctx: ApiContext) -> None:
         return jsonify(status), 200
 
     @app.post("/v1/session/ensure")
+    @maps_failures
     def session_ensure():  # noqa: ANN202
         """把客户端弄到「交易通道可用」。**幂等 + 单飞**（理由见模块 docstring）。"""
-        body = request.get_json(silent=True) or {}
-        account = str(body.get("account") or "").strip()
-        account_type = str(body.get("account_type") or "STOCK").strip().upper()
-        password = body.get("password") or None
-        wait = int(body.get("wait_seconds") or 240)
-        start = bool(body.get("start", True))
-        minimize = bool(body.get("minimize", True))
+        body = json_object(request, allow_empty=True)
+        account = string(body.get("account"), "account", default="")
+        account_type = parse_account_type(body.get("account_type"))
+        password = optional_string(body.get("password"), "password")
+        wait = integer(
+            body.get("wait_seconds"), "wait_seconds",
+            default=240, minimum=1, maximum=600,
+        )
+        start = boolean(body.get("start"), "start", default=True)
+        minimize = boolean(body.get("minimize"), "minimize", default=True)
 
         job_id, mine = flight.start()
         if not mine:
@@ -84,7 +96,10 @@ def register(app: Flask, ctx: ApiContext) -> None:
         except DriverError as e:
             flight.finish(job_id, {"ok": False, "detail": str(e)})
             return jsonify(job_id=job_id, ok=False,
-                           error="driver_error", message=str(e)), 503
+                            error="driver_error", message=str(e)), 503
+        except ValueError as e:
+            flight.finish(job_id, {"ok": False, "detail": str(e)})
+            raise
         except Exception as e:  # noqa: BLE001
             logger.exception("[ensure] 未预期的失败")
             flight.finish(job_id, {"ok": False, "detail": f"{type(e).__name__}: {e}"})

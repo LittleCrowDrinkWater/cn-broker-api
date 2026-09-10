@@ -25,7 +25,7 @@ class Config:
     driver: str = "tdxquant"
     source_path: Optional[Path] = None
     #: 配置文件里**真的写了**哪些键（点号路径）。用来在启动日志和诊断页上把
-    #: 「你写的」和「在吃默认值」分开。
+    #: 区分显式配置值与默认值。
     #: 这不是装饰：漏写一项和写了一项写错值，现象完全不同，而只看最终值分不出来。
     provided: Tuple[str, ...] = ()
 

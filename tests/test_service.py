@@ -145,6 +145,25 @@ def test_ensure_is_idempotent_and_reports_not_acted(client):
         assert b["ok"] is True and b["acted"] is False
 
 
+@pytest.mark.parametrize("payload", [
+    [],
+    {"start": "false"},
+    {"minimize": 0},
+    {"wait_seconds": 0},
+    {"wait_seconds": -1},
+    {"wait_seconds": 601},
+    {"wait_seconds": 1.5},
+    {"password": ["secret"]},
+    {"account": 123},
+    {"account_type": "MARGIN"},
+])
+def test_ensure_rejects_ambiguous_json_types(client, payload):
+    response = client.post("/v1/session/ensure", json=payload, headers=AUTH)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "bad_request"
+
+
 def test_job_lookup_after_ensure(client):
     job = client.post("/v1/session/ensure", json={}, headers=AUTH).get_json()["job_id"]
     got = client.get(f"/v1/jobs/{job}", headers=AUTH).get_json()

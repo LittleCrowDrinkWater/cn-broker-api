@@ -123,11 +123,12 @@ transport = "mcp"
 hqmp_port = 13575
 hqmp_capture = "D:/your-private-data/hqmp-template.jsonl"
 
-# 默认只读。只有明确需要报单/撤单时才打开；调用方还必须显式给证券名称。
+# 默认只读。只有明确需要报单/撤单时才打开；证券身份只由证券代码确定。
 hqmp_enable_trade = false
 
-# false 要求启动 broker API 时没有任何交易客户端进程，适合冷启动验收。
-# true 只接管路径精确属于实验副本的 TC.exe。
+# false 要求启动 broker API 时没有任何交易客户端进程，适合隔离验收。
+# true 允许接管路径精确属于当前 headless 目录的单个 TC.exe；没有 TC 时仍可冷启动。
+# 正式运行建议为 true，使 broker API 进程重启后可以恢复已有交易会话。
 hqmp_reuse_tc = false
 
 # 即使打开交易闸，超出任一上限也会在构造 HQMP 交易帧前拒绝。

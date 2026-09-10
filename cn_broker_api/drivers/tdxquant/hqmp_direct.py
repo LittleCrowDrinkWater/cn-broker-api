@@ -295,6 +295,15 @@ class HqmpDirectSession:
 
     def start(self, *, launch_tc: bool, reuse_tc: bool = False) -> None:
         """在回环地址启动 HQMP 服务；可选启动实验副本 TC，绝不启动 Tdxw。"""
+        if self._server_thread is not None or self._listener is not None:
+            raise RuntimeError("HQMP 服务已经启动")
+        self._stop_event.clear()
+        self._client_registered.clear()
+        self._client_ready.clear()
+        self._client_token = None
+        self._guid = None
+        self._server_error = None
+        self._account = None
         self.root = require_direct_lab_root(self.root)
         self.capture_path = self.capture_path.resolve()
         if not self.capture_path.is_file():
@@ -312,8 +321,6 @@ class HqmpDirectSession:
         if blockers and not (reuse_tc and reusable):
             details = ", ".join(f"{name}({process_id})" for name, process_id in blockers)
             raise RuntimeError(f"已有交易客户端进程在运行：{details}")
-        if reuse_tc and not reusable:
-            raise RuntimeError("没有找到可复用的实验副本 TC.exe")
         _verify_ports_available((self.port,))
         _verify_lab_routing(self.root, self.port)
 
@@ -417,6 +424,25 @@ class HqmpDirectSession:
             connected = self._connection is not None
             registered = self._client_registered.is_set() and bool(self._client_token)
         return connected, registered
+
+    def operation_ready(self, expected_account: str = "") -> tuple[bool, str]:
+        """检查当前连接能否接受业务调用，不发送 HQMP 请求。
+
+        账户在首次完整探测或业务调用后缓存；缓存存在时仍核对调用方账户。连接断开会
+        清空缓存，因此这里不会沿用上一条 TC 连接的账户信息。
+        """
+        with self._state_lock:
+            if self._server_error is not None:
+                return False, f"HQMP 服务线程失败：{type(self._server_error).__name__}"
+            if self._connection is None:
+                return False, "TC 尚未连接到直接 HQMP 宿主"
+            if not self._client_registered.is_set() or not self._client_token:
+                return False, "TC 尚未注册到直接 HQMP 宿主"
+            selected = str((self._account or {}).get("zjzh", "")).strip()
+        expected_account = str(expected_account).strip()
+        if expected_account and selected and selected != expected_account:
+            return False, "TC 当前选中账户与请求账户不一致"
+        return True, "HQMP 连接已注册"
 
     def verified_target_pids(self, names: Sequence[str]) -> dict[int, str]:
         """只返回属于当前实验副本的唯一 TC 进程。
@@ -772,17 +798,53 @@ class HqmpDirectSession:
         return None
 
     def query_orders(self, *, timeout: float = 20.0) -> list[dict[str, Any]]:
-        """查询当日委托原始行。
+        """合并 807 与 822 两份当日委托视图，后读到的 822 状态优先。
 
-        ``None`` 或非列表响应是查询失败，不是“今日无委托”。空列表才是
-        可信的空委托簿。
+        两份视图都必须成功返回列表。只读一份会把另一份独有的委托误判为不存在，
+        对账调用方可能因此重复报单。
         """
-        values = self.call("DoLevinGN_807", {}, timeout)
-        if not isinstance(values, list):
-            raise QueryUnavailable("直接 HQMP 当日委托查询没有返回列表")
-        if not all(isinstance(row, dict) for row in values):
-            raise QueryUnavailable("直接 HQMP 当日委托包含非对象行")
-        return values
+        deadline = time.monotonic() + timeout
+        views = (
+            ("DoLevinGN_807", {}),
+            ("DoLevinGN_822", {"setcode": "-1", "wtbh": "", "zqdm": ""}),
+        )
+        merged: dict[str, dict[str, Any]] = {}
+        for method, params in views:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise QueryUnavailable("直接 HQMP 当日委托查询总超时")
+            try:
+                values = self.call(method, params, remaining)
+            except Exception as exc:  # noqa: BLE001 — 缺任一视图都不能声称委托簿完整
+                raise QueryUnavailable(
+                    f"直接 HQMP 当日委托查询失败：{method}:{type(exc).__name__}"
+                ) from exc
+            if not isinstance(values, list):
+                raise QueryUnavailable(f"{method} 当日委托查询没有返回列表")
+            if not all(isinstance(row, dict) for row in values):
+                raise QueryUnavailable(f"{method} 当日委托包含非对象行")
+            seen: set[str] = set()
+            for row in values:
+                order_id = str(_row_value(row, "wtbh", "Wtbh") or "").strip()
+                if not order_id:
+                    raise QueryUnavailable(f"{method} 当日委托缺少委托编号")
+                if order_id in seen:
+                    raise QueryUnavailable(f"{method} 返回重复委托编号")
+                seen.add(order_id)
+                previous = merged.get(order_id)
+                if previous is not None:
+                    old_symbol = str(
+                        _row_value(previous, "zqdm", "Code", "StockCode") or ""
+                    ).strip()
+                    new_symbol = str(
+                        _row_value(row, "zqdm", "Code", "StockCode") or ""
+                    ).strip()
+                    if old_symbol and new_symbol and old_symbol != new_symbol:
+                        raise QueryUnavailable(
+                            "807 与 822 对同一委托编号返回了不同证券代码"
+                        )
+                merged[order_id] = row
+        return list(merged.values())
 
     def query_positions(self, *, timeout: float = 20.0) -> list[dict[str, Any]]:
         """查询当前账户持仓原始行；账户参数只从已选中账户动态构造。"""
@@ -1038,6 +1100,7 @@ class HqmpDirectSession:
                 self.tc_process.wait(timeout=5)
         self.tc_process = None
         self._stop_event.set()
+        self._fail_pending(ConnectionError("HQMP 宿主正在停止"))
         if self._connection is not None:
             try:
                 self._connection.shutdown(socket.SHUT_RDWR)
@@ -1049,3 +1112,10 @@ class HqmpDirectSession:
         if self._server_thread is not None:
             self._server_thread.join(timeout=3)
             self._server_thread = None
+        with self._state_lock:
+            self._connection = None
+            self._client_token = None
+            self._guid = None
+            self._account = None
+            self._client_registered.clear()
+            self._client_ready.clear()

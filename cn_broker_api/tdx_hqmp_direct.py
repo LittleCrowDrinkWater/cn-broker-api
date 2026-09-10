@@ -67,7 +67,10 @@ def main() -> int:
     host = HqmpDirectSession(args.root, args.port, args.capture)
     try:
         host.start(launch_tc=args.launch_tc, reuse_tc=args.reuse_tc)
-        print(f"HQMP 只读宿主已监听 127.0.0.1:{args.port}，等待实验 TC 注册", flush=True)
+        print(
+            f"HQMP host listening | address=127.0.0.1:{args.port} state=waiting_for_tc",
+            flush=True,
+        )
         if args.auto_login:
             _ensure_direct_login(host, args)
         else:
@@ -84,5 +87,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"HQMP 只读探测失败：{type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        print(f"HQMP probe failed | {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
         raise SystemExit(1)

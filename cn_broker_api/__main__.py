@@ -50,16 +50,11 @@ def build_driver(cfg):  # noqa: ANN001, ANN201
 
 
 def _log_config(log, cfg) -> None:  # noqa: ANN001
-    """把**全部**配置项连生效值一起打印，并标出哪些在吃默认值。
-
-     清单从生效的配置对象上现算，不会和代码分叉；标出默认值是因为「漏写一项」和
-    「写了一项写错值」现象完全不同，而只看最终值分不出来。
-    """
-    log.info("配置文件 %s", cfg.source_path or "(没找到，全套默认值)")
+    """记录全部生效配置，并区分显式配置值与默认值。"""
+    log.info("配置来源 | file=%s", cfg.source_path or "<defaults>")
     for key, value, from_file in cfg.describe():
-        log.info("  %s %-44s %s", " " if from_file else "~", key, value)
-    log.info("  （~ 开头的是配置文件里没写、在吃默认值的项；"
-             "全部可配置项见仓库里的 config.example.toml）")
+        source = "configured" if from_file else "default"
+        log.info("配置项 | source=%-10s key=%-44s value=%s", source, key, value)
 
 
 def main() -> int:
@@ -69,7 +64,7 @@ def main() -> int:
     try:
         cfg = load()
     except ConfigError as e:
-        print(f"配置有问题：{e}", file=sys.stderr)
+        print(f"配置校验失败：{e}", file=sys.stderr)
         return 2
 
     _init_logging(cfg.server.state_dir)
@@ -88,12 +83,13 @@ def main() -> int:
                                        max_starts_per_day=cfg.watchdog.max_starts_per_day))
     app = create_app(cfg, driver, token=token, flight=flight, watchdog=dog)
 
-    log.info("契约 v%s | 驱动 %s | 能力 %s", CONTRACT_VERSION, driver.name,
-             ",".join(driver.capabilities()))
+    log.info("服务配置 | contract=%s driver=%s capabilities=%s",
+             CONTRACT_VERSION, driver.name, ",".join(driver.capabilities()))
     _log_config(log, cfg)
-    log.info("监听 http://%s:%s  ——  诊断页在 /", BIND_HOST, cfg.server.port)
+    log.info("HTTP 服务监听 | url=http://%s:%s diagnostics=/",
+             BIND_HOST, cfg.server.port)
     if cfg.driver == "paper":
-        log.warning("当前是**纸面驱动**：不连任何客户端，四项检查恒绿且都标着 warn")
+        log.warning("纸面驱动已启用 | 不连接交易客户端；健康检查结果仅用于接口联调")
     dog.start()
 
     from waitress import serve

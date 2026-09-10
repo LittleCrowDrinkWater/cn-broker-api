@@ -97,6 +97,54 @@ def test_bad_size_is_400_not_500(client):
     assert r.status_code == 400
 
 
+@pytest.mark.parametrize("field,bad", [
+    ("size", 1.5),
+    ("size", True),
+    ("size", "100"),
+    ("price", float("nan")),
+    ("price", float("inf")),
+    ("price", True),
+    ("price", "4.83"),
+    ("account", ["private"]),
+    ("account_type", 1),
+])
+def test_order_fields_use_strict_json_types(client, field, bad):
+    response = client.post(
+        "/v1/orders", json={**ORDER, field: bad}, headers=AUTH,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "bad_request"
+
+
+def test_order_body_must_be_a_json_object(client):
+    response = client.post("/v1/orders", json=[ORDER], headers=AUTH)
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "bad_request"
+
+
+def test_unknown_account_type_is_rejected(client):
+    response = client.post(
+        "/v1/orders", json={**ORDER, "account_type": "MARGIN"}, headers=AUTH,
+    )
+
+    assert response.status_code == 400
+
+
+def test_trade_hot_path_uses_lightweight_session_status(tmp_path):
+    class SnapshotDriver(PaperDriver):
+        def session_status(self, *, account="", account_type="STOCK"):
+            raise AssertionError("交易热路径不应执行完整会话探测")
+
+        def operation_session_status(self, *, account="", account_type="STOCK"):
+            return {"state": "READY", "ready": True, "detail": "connection registered"}
+
+    response = _app(SnapshotDriver(), tmp_path).get("/v1/account", headers=AUTH)
+
+    assert response.status_code == 200
+
+
 @pytest.mark.parametrize("bad", [
     {"side": "long"}, {"side": ""}, {"size": 0}, {"size": -100}, {"price": 0}, {"price": -1},
 ])

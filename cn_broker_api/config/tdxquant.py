@@ -31,7 +31,7 @@ class TdxQuantConfig:
     hqmp_capture: Optional[Path] = None
     #: 显式打开 HQMP 报单/撤单闸。默认关闭时只读。
     hqmp_enable_trade: bool = False
-    #: 服务启动时是否接管已运行的实验 TC；默认要求无 TC 后冷启动。
+    #: 服务启动时是否允许接管已运行的实验 TC；没有 TC 时仍可冷启动。
     hqmp_reuse_tc: bool = False
     #: 直接通道额外的单笔风险上限，在构造任何 HQMP 交易帧前检查。
     hqmp_max_order_size: int = 100

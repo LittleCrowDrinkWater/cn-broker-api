@@ -22,11 +22,12 @@ def main() -> int:
     try:
         cfg = load()
     except ConfigError as e:
-        print(f"配置读不过：{e}", file=sys.stderr)
+        print(f"配置校验失败：{e}", file=sys.stderr)
         return 2
-    print(f"  配置文件  {cfg.source_path or '(没有配置文件，全套默认值)'}")
+    print(f"配置来源: {cfg.source_path or '<defaults>'}")
     for key, value, given in cfg.describe():
-        print(f"  {'    ' if given else '(默认)'} {key:46} {value}")
+        source = "configured" if given else "default"
+        print(f"[{source:10}] {key:46} {value}")
     return 0
 
 

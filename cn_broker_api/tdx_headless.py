@@ -33,7 +33,7 @@ def main() -> int:
     host = HeadlessTradeHost(root, hq_port, py_port, mcp_port)
     try:
         host.start(launch_tc=args.launch_tc)
-        print(f"headless 交易宿主已就绪：http://127.0.0.1:{mcp_port}/", flush=True)
+        print(f"headless host ready | url=http://127.0.0.1:{mcp_port}/", flush=True)
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:
@@ -46,5 +46,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:
-        print(f"headless 交易宿主失败：{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"headless host failed | {type(exc).__name__}: {exc}", file=sys.stderr)
         raise SystemExit(1)

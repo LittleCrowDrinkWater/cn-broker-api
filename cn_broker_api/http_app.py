@@ -40,7 +40,7 @@ def load_or_create_token(path: Path) -> str:
             return tok
     tok = secrets.token_urlsafe(32)
     path.write_text(tok + "\n", encoding="utf-8")
-    logger.warning("[auth] 已生成新 token：%s", path)
+    logger.warning("[auth] generated API token | path=%s", path)
     return tok
 
 

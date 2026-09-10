@@ -4,11 +4,16 @@
 """
 from __future__ import annotations
 
-from typing import Any, Dict
-
 from flask import Flask, jsonify, request
 
 from cn_broker_api.api.context import ApiContext
+from cn_broker_api.api.request_validation import (
+    finite_number,
+    integer,
+    json_object,
+    optional_string,
+    string,
+)
 from cn_broker_api.api.trade_call import account_of, in_queue, maps_failures
 from cn_broker_api.drivers.base import require
 from cn_broker_api.drivers.capability import Capability
@@ -22,32 +27,33 @@ def register(app: Flask, ctx: ApiContext) -> None:
     @maps_failures
     def create_order():  # noqa: ANN202
         """报单。201＝真报进柜台了；202＝推给客户端等确认（**不是拒单**）。"""
-        body: Dict[str, Any] = request.get_json(silent=True) or {}
+        body = json_object(request)
         account, account_type = account_of(body)
-        symbol = str(body.get("symbol") or "").strip()
+        symbol = string(body.get("symbol"), "symbol")
         if not symbol:
-            raise ValueError("要给 symbol")
+            raise ValueError("symbol 不能为空")
         credit_kind = parse_credit_kind(body.get("credit_kind"))
         if credit_kind is not None:
             require(ctx.driver, Capability.CREDIT_ORDER)
         # 字段校验在入口做完：不合法的请求不该先占一个账户串行槽再失败，而各驱动的严格程度
         # 并不一致（纸面驱动压根不校验）⇒ 400 由这里保证，驱动里那几道留作最后一闸。
-        side = str(body.get("side") or "").strip().lower()
+        side = string(body.get("side"), "side").lower()
         if side not in ("buy", "sell"):
             raise ValueError(f"side 只能是 buy / sell，收到 {body.get('side')!r}")
-        size = _int(body.get("size"), "size")
-        if size <= 0:
-            raise ValueError(f"size 要是正整数，收到 {size}")
-        price = _float(body.get("price"), "price")
-        if price <= 0:
-            raise ValueError(f"price 要是正数，收到 {price}")
-        notify = None if body.get("notify") is None else _int(body.get("notify"), "notify")
+        size = integer(body.get("size"), "size", minimum=1)
+        price = finite_number(body.get("price"), "price")
+        notify = (None if body.get("notify") is None
+                  else integer(body.get("notify"), "notify"))
+        order_type = string(body.get("order_type"), "order_type", default="limit")
+        if order_type != "limit":
+            raise ValueError("order_type 目前只支持 limit")
+        client_order_id = optional_string(body.get("client_order_id"), "client_order_id")
 
         row = in_queue(ctx, account, account_type, f"报单 {symbol}",
                        lambda t: t.create_order(
                            symbol=symbol, side=side, size=size,
-                           price=price, order_type=str(body.get("order_type") or "limit"),
-                           client_order_id=body.get("client_order_id"),
+                           price=price, order_type=order_type,
+                           client_order_id=client_order_id,
                            credit_kind=credit_kind, notify=notify))
         return jsonify(order=row), 201
 
@@ -115,17 +121,3 @@ def register(app: Flask, ctx: ApiContext) -> None:
             return jsonify(known=False,
                            reason="资产查询没有任何资金字段——取不到，不是权益为 0"), 200
         return jsonify(known=True, account=row), 200
-
-
-def _int(value: Any, field: str) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError) as e:
-        raise ValueError(f"{field} 要是整数，收到 {value!r}") from e
-
-
-def _float(value: Any, field: str) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError) as e:
-        raise ValueError(f"{field} 要是数字，收到 {value!r}") from e

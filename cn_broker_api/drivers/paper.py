@@ -84,3 +84,7 @@ class PaperDriver:
             "ready": True,
             "detail": "纸面驱动：无需登录（没有真实交易会话）",
         }
+
+    def operation_session_status(self, *, account: str = "",
+                                 account_type: str = "STOCK") -> Dict[str, Any]:
+        return self.session_status(account=account, account_type=account_type)

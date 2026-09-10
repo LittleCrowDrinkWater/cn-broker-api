@@ -103,7 +103,7 @@ def test_a_driver_without_desktop_login_is_left_alone(tmp_path):
     d = FakeDriver({"Tdxw.exe": False}, caps=())
     res = _dog(tmp_path, d).tick(now=TRADING)
     assert res["action"] == "none" and d.started == []
-    assert "不管桌面进程" in res["reason"]
+    assert "不管理桌面进程" in res["reason"]
 
 
 def test_daily_start_budget_stops_a_restart_loop(tmp_path):

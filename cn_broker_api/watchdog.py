@@ -61,7 +61,7 @@ class Watchdog:
                     f"（现在 {now:%H:%M}）")
         # 能力没声明就明确不干活。静默什么都不做，会让人以为看门狗在工作。
         if Capability.DESKTOP_LOGIN not in self.driver.capabilities():
-            return f"驱动 {getattr(self.driver, 'name', '?')} 不管桌面进程，看门狗无事可做"
+            return f"驱动 {getattr(self.driver, 'name', '?')} 不管理桌面进程"
         return None
 
     # ── 一次心跳 ─────────────────────────────────────────
@@ -125,7 +125,7 @@ class Watchdog:
 
     # ── 线程 ─────────────────────────────────────────────
     def _loop(self) -> None:
-        logger.info("[watchdog] 起来了：每 %d 秒一次，时段 %s~%s%s",
+        logger.info("[watchdog] started | interval=%ds window=%s-%s%s",
                     self.cfg.interval_seconds, self.cfg.window_start,
                     self.cfg.window_end, "（只工作日）" if self.cfg.weekdays_only else "")
         while not self._stop.is_set():
@@ -134,17 +134,17 @@ class Watchdog:
                 if res.get("action") != "none":
                     logger.warning("[watchdog] %s", res.get("reason"))
             except Exception:  # noqa: BLE001 — 一次失败不该让看门狗整条死掉
-                logger.exception("[watchdog] 这一次心跳出错，继续下一次")
+                logger.exception("[watchdog] iteration failed; next iteration remains scheduled")
             self._stop.wait(self.cfg.interval_seconds)
         logger.info("[watchdog] 退出")
 
     def start(self) -> bool:
         """起线程。**没开就不起**，返回是不是真起了。"""
         if not self.cfg.enabled:
-            logger.info("[watchdog] 没开（watchdog.enabled = false），不起线程")
+            logger.info("[watchdog] disabled | watchdog.enabled=false")
             return False
         if Capability.DESKTOP_LOGIN not in self.driver.capabilities():
-            logger.warning("[watchdog] 驱动 %s 不管桌面进程 ⇒ 不起线程",
+            logger.warning("[watchdog] not started | driver=%s has no desktop process recipe",
                            getattr(self.driver, "name", "?"))
             return False
         self._thread = threading.Thread(target=self._loop, name="watchdog", daemon=True)

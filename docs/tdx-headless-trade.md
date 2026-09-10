@@ -2,6 +2,12 @@
 
 ## 结论
 
+> **状态更新（2026-09-10）**：本文件主体记录的是 2026-09-03 的 MCP 回调实验，
+> “headless 下报不出单”只适用于当时的 MCP 路径。后续已改为纯 Python 直接托管 HQMP，
+> 并完成普通/信用委托与撤单真机验证。当前生产形态和操作说明以仓库
+> [README](../README.md) 为准，完整证据见
+> [tdx-headless-trade-collateral-20260907.md](tdx-headless-trade-collateral-20260907.md)。
+
 2026-09-03 已在本机实验副本完成动态验证：不启动 `Tdxw.exe`，只运行 64 位 Python
 headless 宿主和 `NewTc\TC.exe`，TPyth 的本地 JSON-RPC 服务仍能正常完成资金账户、资产、
 持仓和当日委托查询。

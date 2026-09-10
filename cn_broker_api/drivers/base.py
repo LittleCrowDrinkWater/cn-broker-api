@@ -60,6 +60,11 @@ class Driver(Protocol):
         """返回明确的交易登录状态；只观察，不启动进程或提交密码。"""
         ...
 
+    def operation_session_status(self, *, account: str = "",
+                                 account_type: str = "STOCK") -> Dict[str, Any]:
+        """返回业务调用前的轻量会话状态，不执行账户或资产查询。"""
+        ...
+
 
 def require(driver: Driver, capability: str) -> None:
     """要一个能力，没有就明确失败。**调用点写一行，不要各自 if。**"""

@@ -611,6 +611,71 @@ def test_query_order_uses_the_later_822_observation(tmp_path, monkeypatch):
     assert all(0 < timeout <= 3.0 for _method, _params, timeout in calls)
 
 
+def test_query_orders_merges_807_and_822_with_later_state(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+
+    def call(method, _params, _timeout):
+        if method == "DoLevinGN_807":
+            return [_direct_order(), _direct_order(wtbh="807-only")]
+        return [
+            _direct_order(cdflag="1", kcdflag="0", ztsm="买入@已撤@"),
+            _direct_order(wtbh="822-only"),
+        ]
+
+    monkeypatch.setattr(host, "call", call)
+
+    rows = host.query_orders(timeout=3.0)
+
+    assert [row["wtbh"] for row in rows] == ["private-order", "807-only", "822-only"]
+    assert host._direct_order_state(rows[0]) == "canceled"
+
+
+def test_query_orders_requires_both_views(tmp_path, monkeypatch):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+
+    def call(method, _params, _timeout):
+        if method == "DoLevinGN_807":
+            return []
+        raise TimeoutError("unavailable")
+
+    monkeypatch.setattr(host, "call", call)
+
+    with pytest.raises(QueryUnavailable, match="DoLevinGN_822"):
+        host.query_orders(timeout=3.0)
+
+
+def test_operation_ready_is_a_snapshot_and_checks_cached_account(tmp_path):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    host._connection = object()
+    host._client_token = "route"
+    host._client_registered.set()
+
+    assert host.operation_ready("private-account")[0] is True
+    host._account = {"zjzh": "private-account"}
+    assert host.operation_ready("private-account")[0] is True
+    assert host.operation_ready("another-account")[0] is False
+
+
+def test_stop_clears_connection_snapshot_for_a_clean_restart(tmp_path):
+    host = HqmpDirectSession(tmp_path, 13575, tmp_path / "capture.jsonl")
+    server_connection, client_connection = socket.socketpair()
+    try:
+        host._connection = server_connection
+        host._client_token = "route"
+        host._client_registered.set()
+        host._client_ready.set()
+        host._account = {"zjzh": "private-account"}
+
+        host.stop()
+
+        assert host.registration_snapshot() == (False, False)
+        assert host._account is None
+        assert host._stop_event.is_set()
+    finally:
+        server_connection.close()
+        client_connection.close()
+
+
 def test_cancel_waits_until_the_order_is_visible_and_cancellable(tmp_path, monkeypatch):
     host = HqmpDirectSession(
         tmp_path, 13575, tmp_path / "capture.jsonl", enable_trade=True
@@ -794,8 +859,9 @@ def test_direct_queries_use_the_dynamically_selected_account(tmp_path, monkeypat
     assert host.query_orders(timeout=3.0) == []
     assert host.query_positions(timeout=3.0) == []
     assert host.query_assets(timeout=3.0) == []
-    assert calls == [
-        ("DoLevinGN_807", {}, 3.0),
+    assert [(method, params) for method, params, _timeout in calls] == [
+        ("DoLevinGN_807", {}),
+        ("DoLevinGN_822", {"setcode": "-1", "wtbh": "", "zqdm": ""}),
         (
             "DoLevinGN_803",
             {
@@ -804,12 +870,10 @@ def test_direct_queries_use_the_dynamically_selected_account(tmp_path, monkeypat
                 "zjzh": "private-account",
                 "zqdm": "",
             },
-            3.0,
         ),
         (
             "DoLevinGN_830",
             {"qsid": "private-broker", "szID": "", "zjzh": "private-account"},
-            3.0,
         ),
     ]
 
