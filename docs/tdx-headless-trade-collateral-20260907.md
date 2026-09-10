@@ -268,9 +268,8 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
 
 ### 代码、验证与远端快照
 
-- 服务端开发分支：`feature/tdx-headless-trade`，基础实现已以 `32791da` 推送；调用方
-  `feature/broker-session-state` 的 v5 基础接入已以 `27d7ea34` 推送。本轮证券代码单一身份、
-  注册恢复、进程路径绑定和本文更新在两个功能分支上均尚未提交；
+- 服务端开发分支已于 2026-09-10 快进合入 `main` 并推送至 `7a0393c`；调用方
+  `feature/broker-session-state` 的评审待办更新已推送至 `3c3234ca`；
 - `3e21491 fix(tdxquant): handle stale signals across midnight`：完成自动确认脚本跨午夜修复；
 - `22c08d0 feat(tdxquant): expose explicit session state`：完成会话状态、未登录错误契约、
   直接 HQMP 就绪探针和自动登录原型；
@@ -397,9 +396,20 @@ HQMP 帧，而不是 `callRpcClientInterfaceByToken`。这解释了 ctypes 原�
    - 已通过明确配置选择现有 MCP/ctypes 通道或直接 HQMP 通道，禁止静默回落；
    - 已接入 `/v1/orders`、撤单和查询端点，并保留实盘开关、单笔数量和金额上限；
    - 已区分参数拒绝、柜台拒绝、状态未知和登录失效；版本不支持的识别仍需继续补齐。
-   - 尾盘调仓和日内回转原本就只传代码，现与直接 HQMP 契约一致；还需在该分支合并后
-     做一次不发单的生产配置启动验收；
+   - 尾盘调仓和日内回转原本就只传代码，现与直接 HQMP 契约一致；2026-09-10 已在
+     `main` 完成不发单的生产配置启动验收；
    - 当前真机配置的 100 股/2000 元上限只适合验收，不能承载生产调仓；放宽前要增加组合级限额和回归验证。
+
+## 正式切换记录（2026-09-10）
+
+- `feature/tdx-headless-trade` 已快进合入 `main`，`main` 推送至提交 `7a0393c`；
+- 本机忽略配置已切为 `desktop_mode=headless`、`transport=hqmp`、`hqmp_enable_trade=true`；
+- `hqmp_reuse_tc=true`：没有 TC 时允许冷启动，服务重启时只接管路径精确匹配的单个实验副本 TC；
+- Windows 计划任务 `cn-broker-api` 已启用并启动，17710（HTTP）与 13575（HQMP）均正常监听；
+- 通过 QuantTradeDemo 的 `tdx_login.py --go --type CREDIT --wait 90` 完成无人干预登录；
+- `tdx_channel_check.py --type CREDIT` 返回 4 项通过，并确认直接 HQMP 不依赖页面自动确认补丁；
+- `tdx_order.py inspect --type CREDIT` 完成资产、持仓和当日委托只读查询：持仓 5 条、当日委托 0 条；
+- 本轮正式切换未发送任何委托；生产配置继续保留单笔 100 股、2000 元的验收限额，超过限额会明确拒绝。
 
 5. **P2：补齐协议和实盘覆盖范围**
    - 真机验证上证 `setcode=1`；
