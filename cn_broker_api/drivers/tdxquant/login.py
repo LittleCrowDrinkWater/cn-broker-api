@@ -245,7 +245,7 @@ def close_new_popups(pids: Dict[int, str], known: Dict[int, str], keep: int) -> 
     for h, desc in visible_tops(pids).items():
         if h in known or h == keep or _cls(h) == MAIN_FRAME_CLASS:
             continue
-        _say(f"    关掉中间冒出来的窗口 0x{h:x} {desc[:40]!r}")
+        _say(f"关闭登录中间窗口 | hwnd=0x{h:x} title={desc[:40]!r}")
         u32.PostMessageW(h, 0x0010, 0, 0)          # WM_CLOSE
         n += 1
     if n:
@@ -264,24 +264,27 @@ def pass_client_login(dlg: int, ctls: List[Ctl], *, guest: bool = False,
     want = "游客登录" if guest else "登录"
     btns = [c for c in ctls if c.cls.lower() == "button" and c.text.strip() == want]
     if len(btns) != 1:
-        _say(f"[!] 客户端登录窗里找不到唯一的【{want}】按钮（找到 {len(btns)} 个）")
+        _say(f"客户端登录按钮识别失败 | label={want!r} matches={len(btns)}")
         return False
     btn = btns[0]
-    _say(f"  点【{want}】（0x{btn.hwnd:x}，真 Button ⇒ BM_CLICK，不用坐标）")
+    _say(f"点击客户端登录按钮 | label={want!r} hwnd=0x{btn.hwnd:x} method=BM_CLICK")
     for attempt in range(1, tries + 1):
         before = visible_tops(pids_of(dlg))
         u32.SendMessageW(btn.hwnd, BM_CLICK, 0, 0)
         t0 = time.time()
         while time.time() - t0 < seconds / tries + 5:
             if not (u32.IsWindow(dlg) and u32.IsWindowVisible(dlg)):
-                _say(f"  第一道门过了（第 {attempt} 次点击，{time.time() - t0:.0f}s）")
+                _say(
+                    f"客户端登录窗口已关闭 | attempt={attempt} "
+                    f"elapsed={time.time() - t0:.0f}s"
+                )
                 return True
             if close_new_popups(pids_of(dlg), before, dlg):
                 break                              # 关掉了中间窗 ⇒ 立刻再点一次
             time.sleep(0.5)
-    _say(f"[!] 点了 {tries} 次、{seconds} 秒内还没过第一道门"
-          + ("（游客那条路要连点两次，中间窗可能没关掉）" if guest else
-             "（这条路要客户端记着行情密码；没记住就改用 --guest）"))
+    hint = ("guest login may require closing an intermediate window"
+            if guest else "saved market-data credentials may be unavailable")
+    _say(f"客户端登录超时 | attempts={tries} timeout={seconds}s detail={hint}")
     return False
 def pids_of(h: int) -> Dict[int, str]:
     """这个窗口所属进程（够用了：中间窗一定跟登录窗同进程）。"""
@@ -477,12 +480,12 @@ def verify_logged_in(cred: dict, *, seconds: int = 45) -> bool:
                               account_type=str(cred.get("account_type") or "STOCK"))
             last = r.detail
             if r.ok:
-                _say(f"[ok] 登录已生效：{r.detail}")
+                _say(f"登录状态确认通过 | detail={r.detail}")
                 return True
         except Exception as e:  # noqa: BLE001 — 登录过程中连接失败是常态，等下一轮
             last = f"{type(e).__name__}: {str(e)[:110]}"
         time.sleep(2.5)
-    _say(f"[!] {seconds} 秒内没等到登录生效。最后一次：{last}")
+    _say(f"登录状态确认超时 | timeout={seconds}s last_observation={last}")
     return False
 class CredMissing(Exception):
     """凭据文件不在/不全。**可捕获的异常**而不是 `SystemExit`：定时任务要把它翻译成"跳过"
@@ -509,9 +512,9 @@ def _spawn(rel: str) -> None:
 
     exe = tdx_install_root() / rel
     if not exe.exists():
-        _say(f"[!] 找不到 {exe}")
+        _say(f"客户端可执行文件不存在 | path={exe}")
         raise SystemExit(2)
-    _say(f"启动 {exe}")
+    _say(f"启动客户端进程 | path={exe}")
     subprocess.Popen([str(exe)], cwd=str(exe.parent), close_fds=True)
 def start_client() -> None:
     """行情+量化那一半（`Tdxw.exe`）。MCP 那个端口就是它开的。"""
@@ -535,13 +538,12 @@ def _do_trade_login(dlg: int, ctls: List[Ctl], cred: dict) -> bool:
         if btn is None:
             raise Ambiguous("没找到【登录】那块红（界面换版了？先 --probe --shot 看一眼）")
     except Ambiguous as e:
-        _say(f"[!] 认不准，中止：{e}\n"
-              f"   （认错的代价是密码输错，连着几次就锁一天 ⇒ 宁可不动手）")
+        _say(f"交易登录识别失败 | action=abort reason={e}")
         return False
     ox, oy, _w, _h = _wrect(dlg)
     bcx, bcy = (btn[0] + btn[2]) // 2, (btn[1] + btn[3]) // 2
     if acc_c is not None:
-        _say(f"  账号已核对：控件 0x{acc_c.hwnd:x} 与请求一致（只核对不填）")
+        _say(f"交易账户控件核对通过 | hwnd=0x{acc_c.hwnd:x} mode=verify_only")
     pwd = str(cred["password"])
     focus_field(pw_c)
     clear_field(pw_c)
@@ -549,12 +551,13 @@ def _do_trade_login(dlg: int, ctls: List[Ctl], cred: dict) -> bool:
     got = glyph_width(grab(dlg), pw_c, (ox, oy))
     want = GLYPH_W * len(pwd)
     lo, hi = want - GLYPH_W * GLYPH_TOL - 2, want + GLYPH_W * GLYPH_TOL + 2
-    _say(f"  密码框里星号总宽 {got}px（{len(pwd)} 个字符应当在 {lo:.0f}~{hi:.0f}px）")
+    result = "passed" if lo <= got <= hi else "failed"
+    _say(f"密码掩码宽度校验 | observed={got}px result={result}")
     if not (lo <= got <= hi):
         clear_field(pw_c)
-        _say(" 宽度核不上 ⇒ 按键可能掉了几个。**已清空、不提交**（不提交＝不算一次错误尝试）")
+        _say("密码掩码宽度校验失败 | action=clear_and_abort")
         return False
-    _say(f"  核对过了，点【登录】（客户区 {bcx},{bcy}）——只点一次，失败不重试")
+    _say(f"提交交易登录 | client_point={bcx},{bcy} retry_policy=none")
     click(dlg, bcx, bcy)
     return True
 
@@ -605,10 +608,10 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
                 time.sleep(1.0)
                 pids = find_pids(required_processes)
             if name not in pids.values():
-                return False, f"起了 {name} 但 90 秒内没见到这个进程"
+                return False, f"启动 {name} 后 90 秒内未检测到目标进程"
     if not pids:
-        return False, f"没有 {' / '.join(required_processes)} 在跑（start=False 时不替你拉起来）"
-    _say(f"目标进程：{pids}")
+        return False, f"未检测到 {' / '.join(required_processes)}，且 start=false"
+    _say(f"目标进程已识别 | processes={pids}")
 
     t_end = time.time() + wait
     done_client_gate = False
@@ -622,14 +625,14 @@ def ensure_logged_in(cred: dict, *, wait: int = 180, start: bool = True,
             if minimize and acted:
                 # 只在确认可用之后才最小化：失败时收窗口等于把唯一能看出哪里不对的东西藏起来。
                 got = minimize_client(find_pids(required_processes))
-                _say(f"已把客户端最小化（{got} 个窗口）——它照常连着")
+                _say(f"客户端窗口最小化完成 | windows={got}")
             return True, detail
 
         dlg = find_login_dialog(find_pids(required_processes))
         if dlg is not None:
             ctls = snapshot(dlg)
             kind = classify(ctls)
-            _say(f"遇到登录框 0x{dlg:x}，这是哪道门：{kind}")
+            _say(f"登录窗口已识别 | hwnd=0x{dlg:x} kind={kind}")
             if kind == "client":
                 if not done_client_gate:
                     done_client_gate = pass_client_login(dlg, ctls, guest=guest)

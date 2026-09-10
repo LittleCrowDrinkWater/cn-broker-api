@@ -62,7 +62,10 @@ class SubmitLatch:
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError) as e:
-            logger.error("[latch] %s 读不出来（%s）⇒ 按已用完处置", p, str(e)[:120])
+            logger.error(
+                "[latch] state read failed | path=%s error=%s action=block",
+                p, str(e)[:120],
+            )
             return {"__unreadable__": unreadable_value}
         return {str(k): int(v) for k, v in (data or {}).items()}
 
@@ -125,10 +128,11 @@ class SubmitLatch:
             atomic_write_json(self._path(d), counts)
             fails[acc] = nf + 1                      # 先按失败记，成功再清零
             atomic_write_json(self._fail_path, fails)
-            logger.warning("[latch] 当前账户提交密码：今天第 %d 次（上限 %d）；"
-                           "连续未成功 %d 次（上限 %d）",
-                           nd + 1, self.max_per_day, nf + 1,
-                           self.max_consecutive_failures)
+            logger.warning(
+                "[latch] password submission recorded | daily=%d/%d consecutive=%d/%d",
+                nd + 1, self.max_per_day, nf + 1,
+                self.max_consecutive_failures,
+            )
 
     def settle(self, account: str, ok: bool) -> None:
         """把这一趟的结果落下来。**成功就把连续失败清零**。
@@ -144,7 +148,9 @@ class SubmitLatch:
             fails = self._read_counts(self._fail_path, self.max_consecutive_failures + 1)
             fails.pop("__unreadable__", None)
             if fails.get(acc):
-                logger.info("[latch] 当前账户登录成功 ⇒ 连续失败计数 %d 清零",
-                            fails[acc])
+                logger.info(
+                    "[latch] login confirmed | consecutive_failures_reset=%d",
+                    fails[acc],
+                )
             fails[acc] = 0
             atomic_write_json(self._fail_path, fails)

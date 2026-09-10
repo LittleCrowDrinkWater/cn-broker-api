@@ -24,7 +24,7 @@ def main() -> int:
 
     root, hq_port, py_port, mcp_port = preflight(args.root)
     print(
-        f"启动前检查通过：root={root} HQMP={hq_port} PYMP={py_port} MCP={mcp_port}",
+        f"preflight passed | root={root} HQMP={hq_port} PYMP={py_port} MCP={mcp_port}",
         flush=True,
     )
     if args.check_only:
