@@ -578,11 +578,40 @@ def _direct_order(**changes):
         "cjjg": "0",
         "cdflag": "0",
         "kcdflag": "1",
-        "wtsj": "93000",
+        # wtsj ＝**当日第几秒**（34200 ＝ 09:30:00），不是 HHMMSS。这里曾经写 "93000"，
+        # 而真柜台 2026-09-11 给的是 34823（09:40:23）⇒ 假件比真柜台宽容，两侧一起绿着错。
+        "wtsj": "34200",
         "ztsm": "买入@正常委托@",
     }
     row.update(changes)
     return row
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("34823", "094023"),        # 2026-09-11 真柜台那两笔
+    ("35141", "094541"),
+    ("34200", "093000"),
+    ("0", "000000"),
+])
+def test_wtsj_is_seconds_since_midnight(raw, want):
+    """`wtsj` 是当日第几秒。按 HHMMSS 读会得到一个差着几小时的时刻，而调用方拿它判
+    「柜台这笔是不是本行报出去的」⇒ 永远判否、一笔也认不回来，且不报错。"""
+    assert HqmpDirectSession._direct_order_time({"wtsj": raw}) == want
+
+
+@pytest.mark.parametrize("raw", ["93000", "093000", "150000", "", "九点半", "-1"])
+def test_wtsj_that_is_not_seconds_gives_no_time_at_all(raw):
+    """认不出就说没有——调用方那侧的规矩是「缺时刻不排除」，退回原来的行为。
+
+    真按 HHMMSS 发来的交易时刻一律落在这里：一天里最早的委托 9:15 写成 HHMMSS 是 91500，
+    而 91500 > 86399 秒 ⇒ 两种口径不会互相冒充。**宁可没有这一位，不要错的这一位。**
+    """
+    assert HqmpDirectSession._direct_order_time({"wtsj": raw}) is None
+
+
+def test_the_camel_case_time_field_is_still_read_as_hhmmss():
+    """tqcenter 那条路的 `Time` 是 HHMMSS（2026-08-25 真柜台验过）。两个字段两把尺子。"""
+    assert HqmpDirectSession._direct_order_time({"Time": "092302"}) == "092302"
 
 
 def test_query_order_uses_the_later_822_observation(tmp_path, monkeypatch):

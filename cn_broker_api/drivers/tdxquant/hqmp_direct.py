@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
+from cn_broker_api.drivers.tdxquant.fields import order_time as hhmmss_order_time
 from cn_broker_api.symbols import market_of, symbol_key
 from cn_broker_api.trade.ack_unknown import AckUnknown
 from cn_broker_api.trade.credit_kind import CREDIT_KIND_SIDE, CreditOrderKind
@@ -101,12 +102,25 @@ def _true_flag(value: Any) -> bool:
 
 
 def _order_time(value: Any) -> str | None:
-    raw = str(value or "").replace(":", "").strip()
-    if not raw.isdigit() or len(raw) not in {5, 6}:
+    """直连 HQMP 的 `wtsj` → 契约要的 `HHMMSS`。认不出返回 `None`（＝这一位没有信息）。
+
+    🔴 **`wtsj` 装的是「当日第几秒」，不是 HHMMSS**。2026-09-11 实盘两笔委托给的是 34823
+    与 35141，而它们真实的报单时刻是 09:40:23 与 09:45:41（34823 秒 ＝ 9×3600+40×60+23）。
+    此前这里照 tqcenter 那条路的口径把 5 位数补零成 `034823` 就当时刻发出去，调用方按
+    03:48:23 去比，于是「柜台这笔是不是本行报出去的」永远判否 ⇒ **按代码+委托量的认领
+    全线失效**，而失效的表现是"一笔也认不回来"，不报错。
+
+    两种口径不会混：一天里真实的交易时刻按 HHMMSS 写出来最小是 `91500`（9:15 集合竞价），
+    而 91500 > 86399 秒 ⇒ 真按 HHMMSS 发来的值在这里一律落进量程外、返回 `None`，
+    调用方那侧的规矩是「缺时刻不排除」，退回原来的行为。**宁可没有这一位，不要错的这一位。**
+    """
+    raw = str(value or "").strip()
+    if not raw.isdigit():
         return None
-    hms = raw.zfill(6)
-    hour, minute, second = int(hms[:2]), int(hms[2:4]), int(hms[4:])
-    return hms if hour <= 23 and minute <= 59 and second <= 59 else None
+    secs = int(raw)
+    if not 0 <= secs < 86400:
+        return None
+    return f"{secs // 3600:02d}{secs // 60 % 60:02d}{secs % 60:02d}"
 
 
 def require_direct_lab_root(root: Path) -> Path:
@@ -914,8 +928,19 @@ class HqmpDirectSession:
             price=_row_value(row, "wtjg", "WtPrice", "price"),
             filled_size=_row_value(row, "cjsl", "CjVol") or 0,
             avg_fill_price=_row_value(row, "cjjg", "CjPrice") or 0,
-            order_time=_order_time(_row_value(row, "wtsj", "Time")),
+            order_time=cls._direct_order_time(row),
         )
+
+    @staticmethod
+    def _direct_order_time(row: dict[str, Any]) -> str | None:
+        """报单时刻。**两个字段两把尺子，不能共用一个解析器**：直连 HQMP 的 `wtsj` 是当日
+        第几秒，tqcenter 那条路的 `Time` 是 HHMMSS（2026-08-25 真柜台验过）。
+        用错一把不会报错，只会安静地给出一个差着几小时的时刻。
+        """
+        secs = _row_value(row, "wtsj")
+        if secs not in (None, ""):
+            return _order_time(secs)
+        return hhmmss_order_time(row)
 
     @classmethod
     def _direct_order_cancellable(cls, row: dict[str, Any]) -> bool:
